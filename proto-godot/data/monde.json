@@ -1,0 +1,36 @@
+{
+ "n": 1024,
+ "pas_m": 2.344,
+ "emprise_m": 2400.256,
+ "z_min": 99.77656624539266,
+ "z_max": 220.28679359579246,
+ "lat_top": 44.51967973409989,
+ "lon_left": 4.359084159577212,
+ "source": "lidar",
+ "noms": [
+  "eau",
+  "rocher",
+  "ripisylve",
+  "chene_vert",
+  "chene_pubescent",
+  "garrigue",
+  "pelouse"
+ ],
+ "n_arbres": 53142,
+ "arbres_jetes": 5270,
+ "origine": "world_2400.json",
+ "facteur": 2,
+ "reglages": {
+  "lissage_m": 5.0,
+  "aplatissement": 0.85,
+  "creusement": 1.1,
+  "eau_offset_m": 0.5
+ },
+ "echelle_lum": 1.6,
+ "couches": [
+  "falaise",
+  "garrigue",
+  "sousbois",
+  "berge"
+ ]
+}

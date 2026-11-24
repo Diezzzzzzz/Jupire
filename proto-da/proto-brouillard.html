@@ -1,0 +1,1236 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jupire — proto brouillard de guerre</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #0b0c0f; overflow: hidden; }
+  body { font: 13px/1.4 system-ui, "Segoe UI", sans-serif; color: #e4e0d6; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; image-rendering: pixelated; display: block; }
+  #aide { position: fixed; left: 12px; bottom: 10px; background: #000a; padding: 6px 10px; border-radius: 4px; color: #b8b2a2; }
+  #aide b { color: #e4e0d6; font-weight: 600; } #aide a { color: #c9a654; }
+  #panneau { position: fixed; left: 12px; top: 10px; margin: 0; background: #000a; padding: 6px 10px; border-radius: 4px; font: 12px/1.45 ui-monospace, Consolas, monospace; color: #d8d2c2; pointer-events: none; white-space: pre-wrap; max-width: 60ch; }
+  #charge { position: fixed; inset: 0; display: grid; place-items: center; background: #0b0c0f; font-size: 16px; text-align: center; }
+  #charge small { display: block; color: #8d887c; margin-top: 6px; }
+</style>
+</head>
+<body>
+<canvas id="ecran"></canvas>
+<div id="aide"><b>clic</b> : aller là · <b>ZQSD</b> ou <b>flèches</b> : marcher · <b>Maj</b> : courir · <b>molette</b> : zoom · <b>B</b> : brouillard · <b>O</b> : vue satellite · <b>V</b> : vent<br>
+<b>1</b> à <b>5</b> : temps ×1 ×2 ×4 ×8 ×16 · <b>Espace</b> : pause · <span id="horloge"></span> · <a href="?zone=balazuc">Balazuc</a> · <a href="?zone=vinezac">Largentière–Vinezac</a> · <span id="ips"></span></div>
+<pre id="panneau"></pre>
+<div id="charge"><div><span id="etape">Préparation du terrain…</span><small>jusqu'à une quinzaine de secondes pour la grande zone, une seule fois</small></div></div>
+
+<script>
+  // Zone choisie dans l'adresse : proto-brouillard.html?zone=vinezac (défaut : Balazuc).
+  const ZONE = (new URLSearchParams(location.search).get("zone") || "balazuc").replace(/[^a-z0-9_-]/gi, "");
+  for (const f of ZONE === "balazuc" ? ["donnees-falaise.js", "donnees-arbres.js"] : [`donnees-${ZONE}.js`])
+    document.write(`<script src="${f}"><\/script>`);
+</script>
+<script>
+"use strict";
+/* Proto « brouillard de guerre » : un personnage sur un relevé LiDAR réel (Balazuc, ou Largentière–Vinezac).
+   Le monde est une grille rectangulaire à 1 m (NX x NY). Le terrain est dessiné PAR MORCEAUX de 256 px,
+   à la demande, autour de la caméra, et gardé en cache : c'est ce qui permet une zone de plusieurs km.
+   Chaque trame recopie les morceaux visibles, applique le brouillard (ligne de vue sur le relief), anime
+   l'eau et pose les sprites (arbres, chèvres, habitants, personnage) avec un test de profondeur. */
+const D = window.DONNEES, NX = D.nx || D.n, NY = D.ny || D.n, NN = NX * NY, LARG = NX - 1, HAUTEUR = NY - 1, ZR = D.zmax - D.zmin;
+const C = 2;                     // taille de cellule du terrain, en mètres
+const PXM = 16;                  // pixels par mètre : un humain fait ~17 px, un chêne de 8 m ~80 px
+const PAS = 2 / PXM, NFX = LARG * PXM / 2 + 1, NFY = HAUTEUR * PXM / 2 + 1;       // treillis fin : un point par pixel de sol
+const ZS = PXM * 0.6124;         // pixels verticaux par mètre (dimétrique 2:1, caméra à 30°)
+const ELEV = 40 * Math.PI / 180;
+const PORTEE = 85, YEUX = 1.7, CIBLE_H = 1.2;   // portée de vue (m), hauteur des yeux (m), hauteur de ce qu'on cherche à voir (m)
+const VIDE = 0xff0f0c0b;         // jamais vu (ABGR)
+const T = 256, TUILES_MAX = 110; // côté d'un morceau de terrain (px) et nombre gardé en mémoire
+
+/* ---------- outils ---------- */
+function b64(s) { const b = atob(s), a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+function bitsVers(s) { const m = new Uint8Array(NN); if (s) { const e = b64(s); for (let k = 0; k < NN; k++) m[k] = (e[k >> 3] >> (k & 7)) & 1; } return m; }
+function hasard(n) { n = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b); n ^= n >>> 13; n = Math.imul(n, 0xc2b2ae35); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+function hasard2(a, b) { return hasard(Math.imul(a, 73856093) ^ Math.imul(b, 19349663)); }
+function bruit(x, y) {           // bruit de valeur lissé, 0..1
+  const a = Math.floor(x), b = Math.floor(y); let u = x - a, v = y - b; u = u * u * (3 - 2 * u); v = v * v * (3 - 2 * v);
+  return (hasard2(a, b) * (1 - u) + hasard2(a + 1, b) * u) * (1 - v) + (hasard2(a, b + 1) * (1 - u) + hasard2(a + 1, b + 1) * u) * v;
+}
+function abgr(h) { const v = parseInt(h.slice(1), 16); return (0xff000000 | ((v & 255) << 16) | (v & 0xff00) | (v >> 16)) >>> 0; }
+const pal = l => l.map(abgr);
+const P = {
+  herbe:   pal(["#2c3722", "#44532c", "#5d6e37", "#7a8845", "#98a25a"]),
+  seche:   pal(["#33381f", "#4d5429", "#687035", "#858c44", "#a3a85a"]),
+  eboulis: pal(["#3b3026", "#584835", "#776448", "#96825f", "#b5a17a"]),
+  galets:  pal(["#4d4a42", "#6f6a5c", "#938c78", "#b4ac94", "#d0c8ae"]),
+  roche:   pal(["#45464a", "#666664", "#8b8880", "#b2ad9f", "#d7d1bf"]),
+  eau:     pal(["#173a42", "#1f4d56", "#28626b", "#34787f", "#4a9296", "#7fb3ad"]),
+  chaume:  pal(["#56401f", "#7a5b2a", "#a17e3b", "#c3a051", "#dcc072"]),
+  mur:     pal(["#655646", "#88755e", "#b19f82", "#d3c3a3", "#ebdfc2"]),
+  tuile:   pal(["#573225", "#7a4a34", "#9e6748", "#bb8762", "#d2a682"]),
+  chemin:  pal(["#4a4034", "#6b5c49", "#8d7a61", "#ab977a", "#c6b394"]),
+  brousse: pal(["#232a1b", "#343f24", "#48562d", "#5f6e39", "#788748"]),     // broussailles : 0,3 à 1,5 m de végétation
+  sousbois:pal(["#211e16", "#322c1e", "#463d28", "#5a4f32", "#70633f"]),     // litière sous les arbres
+  humide:  pal(["#22381f", "#325029", "#446a35", "#5a8443", "#749e57"]),     // herbe haute des berges
+  coupe:   pal(["#211d1a", "#2b2521", "#352d27"]),
+  fleurs:  pal(["#e8e0a0", "#dcdcd0", "#c9786a"]),
+};
+const ECUME = abgr("#d5ddd2"), ECLAT = abgr("#f2f4e8");
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
+
+/* ---------- relief ---------- */
+const H0 = new Float32Array(NN);
+{ const u = new Uint16Array(b64(D.alt_cm_u16).buffer); for (let k = 0; k < NN; k++) H0[k] = u[k] / 100; }
+const EAU = bitsVers(D.eau_bits);
+const LIT = bitsVers(D.lit_bits);            // lits de ruisseaux intermittents, à sec
+const CHEMIN = bitsVers(D.chemin_bits);      // routes de la BD TOPO (seulement avec --bati)
+const TUILE_ROMAINE = !!D.bati_dm_u8;        // vrais bâtiments IGN : toits de tuile ; hameau du proto : chaume
+let TOIT = D.bati_dm_u8 ? b64(D.bati_dm_u8) : null;                 // hauteur des bâtiments intégrés au terrain (dm)
+const PEUPLEMENT = D.peuplement_u8 ? b64(D.peuplement_u8) : null;   // type de forêt de la BD TOPO : 1 feuillus, 2 conifères, 3 mixte, 4 verger, 5 lande
+const COUVERT = D.couvert_dm_u8 ? b64(D.couvert_dm_u8) : null;      // hauteur de végétation mesurée par le LiDAR (dm)
+
+function niveler(seuil, passes) {            // même nivellement « doux » que falaise-cellules.html
+  let A = Float32Array.from(H0), B = new Float32Array(NN);
+  const Gd = new Float32Array(NN);
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+    let s = 0, q = 0;
+    for (let b = Math.max(j - 1, 0); b <= Math.min(j + 1, NY - 1); b++) for (let a = Math.max(i - 1, 0); a <= Math.min(i + 1, NX - 1); a++) { s += H0[b * NX + a]; q++; }
+    Gd[j * NX + i] = s / q;
+  }
+  const WX = new Float32Array(NN), WY = new Float32Array(NN);
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+    const k = j * NX + i;
+    if (i < NX - 1) WX[k] = 0.2 * Math.exp(-(((Gd[k + 1] - Gd[k]) / seuil) ** 2));
+    if (j < NY - 1) WY[k] = 0.2 * Math.exp(-(((Gd[k + NX] - Gd[k]) / seuil) ** 2));
+  }
+  for (let t = 0; t < passes; t++) {
+    for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      const k = j * NX + i, z = A[k];
+      if (EAU[k]) { B[k] = z; continue; }
+      let f = 0;
+      if (i < NX - 1) f += WX[k] * (A[k + 1] - z); if (j < NY - 1) f += WY[k] * (A[k + NX] - z);
+      if (i > 0) f += WX[k - 1] * (A[k - 1] - z); if (j > 0) f += WY[k - NX] * (A[k - NX] - z);
+      B[k] = z + f;
+    }
+    [A, B] = [B, A];
+  }
+  return A;
+}
+function distances(dedans) {                 // distance (m, plafonnée) au bord de la zone, vue de l'intérieur
+  const Dd = new Uint8Array(NN), MAXD = 40;
+  for (let k = 0; k < NN; k++) Dd[k] = dedans(k) ? MAXD : 0;
+  for (let passe = 0; passe < 2; passe++) {
+    for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) { const k = j * NX + i; let v = Dd[k]; if (!v) continue; if (i > 0 && Dd[k - 1] + 1 < v) v = Dd[k - 1] + 1; if (j > 0 && Dd[k - NX] + 1 < v) v = Dd[k - NX] + 1; Dd[k] = v; }
+    for (let j = NY - 1; j >= 0; j--) for (let i = NX - 1; i >= 0; i--) { const k = j * NX + i; let v = Dd[k]; if (!v) continue; if (i < NX - 1 && Dd[k + 1] + 1 < v) v = Dd[k + 1] + 1; if (j < NY - 1 && Dd[k + NX] + 1 < v) v = Dd[k + NX] + 1; Dd[k] = v; }
+  }
+  return Dd;
+}
+const NCX = LARG / C + 1, NCY = HAUTEUR / C + 1;
+function bilin(G, x, y) {
+  const u = x / C, v = y / C, a = Math.min(u | 0, NCX - 2), b = Math.min(v | 0, NCY - 2), fu = u - a, fv = v - b, r = b * NCX + a;
+  return (G[r] * (1 - fu) + G[r + 1] * fu) * (1 - fv) + (G[r + NCX] * (1 - fu) + G[r + NCX + 1] * fu) * fv;
+}
+
+let G, SOL, VUE, BLOQ, PROF_EAU, DIST_EAU;
+const OMB = new Uint8Array(NN);              // ombre portée du relief, calculée à la demande : 0 inconnu, 1 au soleil, 2 à l'ombre
+const OMBA = new Uint8Array(NN);             // ombre portée des arbres
+const W = NFX + NFY - 1, HAUT = Math.ceil(ZR * ZS) + 40, SOCLE = Math.ceil(4 * ZS), HT = HAUT + ((NFX + NFY) >> 1) + SOCLE + 2;   // image virtuelle du monde
+const SUN = (() => { let x = -0.45, y = 1.15; const l = Math.hypot(x, y); x /= l; y /= l; for (let k = 0; k < (4 - D.rotation_defaut) % 4; k++) [x, y] = [-y, x]; return [x, y]; })();
+
+function preparerRelief() {
+  const HN = niveler(0.30, 60);
+  G = new Float32Array(NCX * NCY);
+  for (let b = 0; b < NCY; b++) for (let a = 0; a < NCX; a++) {
+    let s = 0, n = 0;
+    for (let j = Math.max(b * C - 1, 0); j <= Math.min(b * C + 1, NY - 1); j++) for (let i = Math.max(a * C - 1, 0); i <= Math.min(a * C + 1, NX - 1); i++) { s += HN[j * NX + i]; n++; }
+    G[b * NCX + a] = s / n;
+  }
+  SOL = new Float32Array(NN);              // altitude du sol jouable, à 1 m (eau = surface de la nappe)
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) { const k = j * NX + i, z = bilin(G, i, j); SOL[k] = EAU[k] && (D.eau_stricte || z <= H0[k] + 0.4) ? H0[k] : z; }
+  PROF_EAU = distances(k => EAU[k] === 1); // dans l'eau : distance à la berge (sert de profondeur)
+  DIST_EAU = distances(k => EAU[k] === 0); // sur terre : distance à l'eau
+  VUE = Float32Array.from(SOL); BLOQ = new Uint8Array(NN);
+  // Hameau de démonstration (Balazuc seulement) : quelques maisons si le terrain est assez plat sous chacune.
+  if (!TOIT && D.hameau !== false && D.maison) {
+    TOIT = new Uint8Array(NN);
+    for (const [dx, dy, lx, ly] of [[0, 0, 4.5, 3], [17, -7, 3, 4.5], [-15, 9, 4, 3], [6, 16, 3, 4]]) {
+      const cx = D.maison[0] + dx, cy = D.maison[1] + dy; let mn = 1e9, mx = -1e9, eau = false;
+      for (let j = cy - 5; j <= cy + 5; j++) for (let i = cx - 5; i <= cx + 5; i++) { const z = SOL[j * NX + i]; mn = Math.min(mn, z); mx = Math.max(mx, z); eau = eau || EAU[j * NX + i]; }
+      if (mx - mn > 1.6 || eau) continue;
+      for (let j = Math.ceil(cy - ly); j <= cy + ly; j++) for (let i = Math.ceil(cx - lx); i <= cx + lx; i++)
+        TOIT[j * NX + i] = 28 + (Math.min(lx, ly) - (lx > ly ? Math.abs(j - cy) : Math.abs(i - cx))) * 11;      // murs de 2,8 m + toit à deux pans
+    }
+  }
+  if (TOIT) for (let k = 0; k < NN; k++) if (TOIT[k]) { BLOQ[k] = 1; VUE[k] = SOL[k] + TOIT[k] / 10; }
+}
+function ombre(k) {              // la case k est-elle dans l'ombre portée du relief ? (calcul paresseux, gardé en mémoire)
+  if (OMB[k]) return OMB[k] === 2;
+  const tanE = Math.tan(ELEV), z0 = SOL[k] + 0.6; let x = k % NX, y = k / NX | 0, r = 1;
+  for (let n = 1; n < 110; n++) {
+    x += SUN[0] * 1.5; y += SUN[1] * 1.5; const hz = z0 + n * 1.5 * tanE;
+    if (x < 0 || y < 0 || x > NX - 1 || y > NY - 1 || hz > ZR) break;
+    if (n > 1 && SOL[Math.round(y) * NX + Math.round(x)] > hz) { r = 2; break; }
+  }
+  OMB[k] = r; return r === 2;
+}
+
+/* ---------- dessin du terrain, par morceaux ---------- */
+function ecran(x, y, z) { const i = x / PAS, j = y / PAS; return [i - j + NFY - 1, HAUT + (i + j) / 2 - z * ZS]; }
+
+let mLat = 0;                    // matière du dernier point demandé : 0 sol, 3 eau, 4 bâti
+function hauteur(i, j) {         // altitude du point (i, j) du treillis fin
+  const x = i * PAS, y = j * PAS, k1 = Math.min(Math.round(y), NY - 1) * NX + Math.min(Math.round(x), NX - 1);
+  const z = bilin(G, x, y);
+  if (EAU[k1] && (D.eau_stricte || z <= H0[k1] + 0.4)) { mLat = 3; return H0[k1]; }
+  if (TOIT && TOIT[k1]) {        // toit : hauteur interpolée entre les 4 cases voisines si toutes sont bâties
+    const a = Math.min(x | 0, NX - 2), b = Math.min(y | 0, NY - 2), r = b * NX + a, fu = x - a, fv = y - b;
+    const h = TOIT[r] && TOIT[r + 1] && TOIT[r + NX] && TOIT[r + NX + 1]
+      ? (TOIT[r] * (1 - fu) + TOIT[r + 1] * fu) * (1 - fv) + (TOIT[r + NX] * (1 - fu) + TOIT[r + NX + 1] * fu) * fv : TOIT[k1];
+    mLat = 4; return z + h / 10;
+  }
+  mLat = 0; return z;
+}
+
+/* ---------- vue satellite (touche O) : l'orthophoto IGN à 1 m plaquée sur le relief, pour se repérer ---------- */
+let ORTHO = null, satellite = false, orthoDemandee = false;
+function chargerOrtho() {        // chargée seulement à la première demande ; les JPEG sont dans un fichier JS pour pouvoir être lus depuis file://
+  if (orthoDemandee) return; orthoDemandee = true; dire("Chargement de l'image satellite…");
+  const sc = document.createElement("script"); sc.src = `ortho-${ZONE}.js`;
+  sc.onerror = () => dire("Pas d'image satellite pour cette zone.");
+  sc.onload = () => {
+    const O = new Uint32Array(NN); let reste = window.ORTHO_TUILES.length;
+    for (const tu of window.ORTHO_TUILES) {
+      const im = new Image();
+      im.onload = () => {
+        const c = document.createElement("canvas"); c.width = tu.w; c.height = tu.h;
+        const g = c.getContext("2d"); g.drawImage(im, 0, 0, tu.w, tu.h);
+        const px = new Uint32Array(g.getImageData(0, 0, tu.w, tu.h).data.buffer);
+        for (let j = 0; j < tu.h; j++) O.set(px.subarray(j * tu.w, (j + 1) * tu.w), (tu.y + j) * NX + tu.x);
+        if (--reste === 0) { ORTHO = O; dire("Vue satellite active. Touche O pour revenir au dessin."); }
+      };
+      im.onerror = () => dire("Image satellite illisible.");
+      im.src = "data:image/jpeg;base64," + tu.jpeg;
+    }
+  };
+  document.head.appendChild(sc);
+}
+
+const tuiles = new Map(); let horlogeTuiles = 0;
+function rendreTuile(tx, ty) {   // dessine le morceau (tx, ty) de l'image virtuelle : colonne par colonne, du plus proche au plus lointain
+  const TER = new Uint32Array(T * T), CEL = new Uint32Array(T * T).fill(0xffffffff), DEP = new Uint16Array(T * T), MATP = new Uint8Array(T * T);
+  const x0 = tx * T, y0 = ty * T, yBas = y0 + T;
+  const ch = Math.cos(ELEV), sunX = SUN[0] * ch, sunY = SUN[1] * ch, sunZ = Math.sin(ELEV), zrPx = Math.ceil(ZR * ZS);
+  for (let sx = Math.max(x0, 0); sx < Math.min(x0 + T, W); sx++) {
+    const k = sx - (NFY - 1);                                // i - j, constant sur la colonne ; s = i + j parcourt la profondeur
+    const sAvant = Math.min(2 * (NFX - 1) - k, 2 * (NFY - 1) + k), sFond = Math.abs(k);
+    // Seuls les points dont le sol tombe entre le haut du morceau et (bas du morceau + dénivelé max) peuvent s'y voir.
+    let sMax = Math.min(sAvant, 2 * (yBas - HAUT + zrPx) + 2), sMin = Math.max(sFond, 2 * (y0 - HAUT - SOCLE) - 2);
+    if ((sMax - k) & 1) sMax--;
+    let yMin = yBas;
+    for (let s = sMax; s >= sMin && yMin > y0; s -= 2) {
+      const i = (s + k) >> 1, j = (s - k) >> 1, z = hauteur(i, j), m = mLat;
+      const yg = HAUT + (s >> 1), y = yg - Math.round(z * ZS);
+      const cel = Math.min(Math.round(j * PAS), NY - 1) * NX + Math.min(Math.round(i * PAS), NX - 1);
+      if (s === sAvant) {                                    // bord de la carte : tranche de terrain
+        const cote = k >= NFX - NFY ? 0 : 1;
+        for (let row = Math.max(y + 1, y0); row <= Math.min(yg + SOCLE, yBas - 1); row++) { const q = (row - y0) * T + sx - x0; TER[q] = P.coupe[((row - yg) / (ZS * 1.5) & 1) + cote]; CEL[q] = cel; DEP[q] = s; MATP[q] = 1; }
+        if (y + 1 < yMin) yMin = y + 1;
+      }
+      if (y >= yMin) continue;
+      const i1 = Math.min(i + 1, NFX - 1), i0 = i1 - 1, j1 = Math.min(j + 1, NFY - 1), j0 = j1 - 1;
+      const a = hauteur(i0, j0), b = hauteur(i1, j0), c = hauteur(i0, j1), d = hauteur(i1, j1);
+      const gx = (b - a + d - c) / (2 * PAS), gy = (c - a + d - b) / (2 * PAS), pente = Math.hypot(gx, gy);
+      let lam = (-gx * sunX - gy * sunY + sunZ) / Math.sqrt(gx * gx + gy * gy + 1); if (lam < 0) lam = 0;
+      const x = i * PAS, yy = j * PAS, idx = Math.imul(j, 40503) + i | 0, hz = hasard(idx);
+      // Toutes les grilles à 1 m (ombres, couvert, berges…) sont lues sur une case tirée à ±70 cm autour du point :
+      // leurs frontières deviennent un fondu tramé au lieu d'un escalier de losanges.
+      const cj = Math.max(0, Math.min(NY - 1, Math.round(yy + (hasard(idx ^ 0x5bd1e995) - 0.5) * 1.4))) * NX + Math.max(0, Math.min(NX - 1, Math.round(x + (hz - 0.5) * 1.4)));
+      const cv = COUVERT ? COUVERT[cj] + (bruit(x / 1.7, yy / 1.7) - 0.5) * 8 + (bruit(x / 6, yy / 6) - 0.5) * 12 : OMBA[cj] ? 40 : 0;
+      // Ombre : celle du relief, celle des arbres, et sous un couvert fermé la pénombre du sous-bois trouée de taches de soleil.
+      const aLOmbre = ombre(cj) || (m !== 4 && (OMBA[cj] ? bruit(x * 1.3, yy * 1.3) > 0.22 : cv >= 34 && bruit(x * 0.7 + 7, yy * 0.7) < 0.62));
+      if (aLOmbre) lam *= 0.25;
+      let v = 0.16 + 0.84 * lam, palette, genre;             // genre : 0 herbe, 1 cailloux, 2 roche, 3 eau, 4 bâti, 5 sous-bois, 6 broussailles
+      if (m === 3) { palette = P.eau; genre = 3; }
+      else if (m === 4) { palette = pente > 2.5 ? P.mur : TUILE_ROMAINE ? P.tuile : P.chaume; genre = 4; }
+      else {
+        const roc = pente + (bruit(x / 7, yy / 7) - 0.5) * 0.4 + (hz - 0.5) * 0.3;
+        if (roc > 1.0) { palette = P.roche; genre = 2; }
+        else if (CHEMIN[cj] && roc < 0.9) { palette = P.chemin; genre = 1; }
+        else if (roc > 0.74) { palette = P.eboulis; genre = 1; }      // seulement les vrais talus : les petits ressauts de terrasses restent en herbe
+        else if (LIT[cj] || DIST_EAU[cj] <= 2 + bruit(x / 3, yy / 3) * 2) { palette = P.galets; genre = 1; }      // berge, ou lit de ruisseau à sec
+        else {
+          // Le couvert mesuré décide du sol : litière sous les arbres, broussailles, herbe haute près de l'eau, sinon pré.
+          if (cv >= 30) { palette = P.sousbois; genre = 5; }
+          else if (cv >= 3.5) { palette = P.brousse; genre = 6; v += (bruit(x / 1.2, yy / 1.2) - 0.5) * 0.3; }
+          else if (DIST_EAU[cj] <= 3 + bruit(x / 4, yy / 4) * 7) { palette = P.humide; genre = 0; v += (bruit(x / 2.5, yy / 2.5) - 0.5) * 0.14; }
+          else { palette = bruit(x / 23 + 9, yy / 23 + 4) + (bruit(x / 4, yy / 4) - 0.5) * 0.2 + (hasard(idx * 7 + 1) - 0.5) * 0.3 > 0.56 ? P.seche : P.herbe; genre = 0; v += (bruit(x / 2.5, yy / 2.5) - 0.5) * 0.14; }
+        }
+      }
+      const n1 = palette.length - 1;
+      for (let row = Math.max(y, y0); row < yMin; row++) {
+        const q = (row - y0) * T + sx - x0; let vv = v, couleur = 0;
+        const h = hasard(Math.imul(idx, 31) + row * 17);
+        if (genre === 2) { if (pente > 0.8) vv += (hasard((z - (row - y) / ZS) / 1.3 | 0) - 0.5) * 0.24; if (h < 0.04) vv -= 0.2; }
+        else if (genre === 0) { if (h < 0.08) vv -= 0.22; else if (h > 0.94) vv += 0.2; if (h > 0.9972 && pente < 0.35 && !aLOmbre) couleur = P.fleurs[(h * 9973 | 0) % 3]; }
+        else if (genre === 1) { if (h < 0.09) vv -= 0.25; else if (h > 0.88) vv += 0.25; }
+        else if (genre === 6) { if (h < 0.22) vv -= 0.3; else if (h > 0.84) vv += 0.28; }        // touffes serrées
+        else if (genre === 5) { if (h < 0.12) vv -= 0.2; else if (h > 0.9) couleur = P.seche[1 + ((h * 977 | 0) % 3)]; else if (h > 0.87) couleur = P.humide[1]; }        // feuilles mortes, un peu de mousse
+        if (!couleur) {
+          let t = Math.floor(vv * (genre === 3 ? 4 : n1) + 0.5 + (BAYER[(row & 3) * 4 + (sx & 3)] - 0.5) * 0.5);
+          couleur = palette[t < 0 ? 0 : t > n1 ? n1 : t];
+        }
+        TER[q] = couleur; CEL[q] = cel; DEP[q] = s; MATP[q] = genre === 3 ? 2 : 1;
+      }
+      yMin = y;
+    }
+  }
+  // Semis : cailloux, touffes d'herbe, fleurs, brindilles, champignons, galets, roseaux. Rien n'est stocké : pour chaque
+  // case visible dans ce morceau, un tirage stable dit quoi poser et où. Deux morceaux voisins tirent donc la même chose.
+  const cases = new Set(); let avant = -1;
+  for (let q = 0; q < T * T; q++) { const c = CEL[q]; if (c !== avant && c !== 0xffffffff) { avant = c; cases.add(c); if (c > NX) cases.add(c - NX); if (c < NN - NX) cases.add(c + NX); cases.add(c - 1); cases.add(c + 1); } }
+  for (const k of cases) {
+    if (k < NX || k >= NN - NX || EAU[k] || BLOQ[k]) continue;
+    const ci = k % NX, cjj = k / NX | 0, pente = Math.hypot(SOL[k + 1] - SOL[k - 1], SOL[k + NX] - SOL[k - NX]) / 2;
+    const couv = COUVERT ? COUVERT[k] : OMBA[k] ? 40 : 0, de = DIST_EAU[k];
+    const milieu = LIT[k] || de <= 2 ? "berge" : pente > 0.75 ? "pierrier" : couv >= 30 ? "bois" : couv >= 4 ? "brousse" : de <= 7 ? "humide" : "pre";
+    for (let n = 0; n < 2; n++) {
+      const sp = SEMIS.tirer(milieu, hasard2(ci * 3 + n, cjj * 5 + 1), hasard2(ci * 7 + n * 3, cjj * 11 + 5)); if (!sp) continue;
+      const x = ci + hasard2(ci + n * 9, cjj * 3 + 2) - 0.5, y = cjj + hasard2(ci * 5 + 4, cjj + n * 7) - 0.5, dep = (x + y) / PAS, [ex, ey] = ecran(x, y, solA(x, y));
+      const bx = Math.round(ex) - sp.ax - x0, by = Math.round(ey) - sp.h + 1 - y0, sombre = OMB[k] === 2 || couv >= 34;
+      for (let v = Math.max(0, -by); v < sp.h && by + v < T; v++) for (let u = Math.max(0, -bx); u < sp.w && bx + u < T; u++) {
+        const c = sp.px[v * sp.w + u]; if (!c) continue;
+        const q = (by + v) * T + bx + u; if (MATP[q] !== 1 || Math.abs(DEP[q] - dep) > 14) continue;       // seulement sur le sol, à sa profondeur
+        TER[q] = sombre ? ((c >> 1) & 0x7f7f7f) + ((c >> 2) & 0x3f3f3f) | 0xff000000 : c; MATP[q] = 4;
+      }
+    }
+  }
+  // Le décor posé au sol est cuit dans l'image du terrain (MATP = 4). Les arbres vont dans une couche à part
+  // (TERV couleur, IDV numéro de l'arbre + 1, HV hauteur du pixel au-dessus du pied) : c'est ce qui permet de les
+  // faire bouger au vent et d'ouvrir le feuillage autour du personnage sans rien redessiner.
+  const TERV = new Uint32Array(T * T), IDV = new Uint16Array(T * T), HV = new Uint8Array(T * T), lot = [], decor = [];
+  for (let b = ty; b <= ty + 1; b++) for (let a = tx - 1; a <= tx + 1; a++) for (const t of ARBRES.get(b * 4096 + a) || [])
+    if (t.sx + t.spr.w > x0 && t.sx - t.spr.w < x0 + T && t.sy >= y0 && t.sy - t.spr.h < yBas) (t.sol ? decor : lot).push(t);
+  for (const t of decor) {
+    const sp = t.spr, px = sp.px, bx = t.sx - sp.ax - x0, by = t.sy - sp.h + 1 - y0;
+    for (let v = Math.max(0, -by); v < sp.h && by + v < T; v++) for (let u = Math.max(0, -bx); u < sp.w && bx + u < T; u++) {
+      const c = px[v * sp.w + u]; if (!c) continue;
+      const q = (by + v) * T + bx + u; if (CEL[q] === 0xffffffff || MATP[q] === 2 || DEP[q] > t.dep + 12) continue;
+      TER[q] = OMB[CEL[q]] === 2 ? ((c >> 1) & 0x7f7f7f) | 0xff000000 : c; MATP[q] = 4;
+    }
+  }
+  lot.sort((p, q) => p.dep - q.dep);
+  for (let n = 0; n < lot.length; n++) {
+    const t = lot[n], sp = t.spr, px = sp.px, bx = t.sx - sp.ax - x0, by = t.sy - sp.h + 1 - y0;
+    for (let v = Math.max(0, -by); v < sp.h && by + v < T; v++) for (let u = Math.max(0, -bx); u < sp.w && bx + u < T; u++) {
+      const c = px[v * sp.w + u]; if (!c) continue;
+      const q = (by + v) * T + bx + u; if (DEP[q] > t.dep + 5) continue;         // le terrain est devant
+      TERV[q] = c; IDV[q] = n + 1; HV[q] = Math.min(255, sp.h - 1 - v);
+    }
+  }
+  return { TER, CEL, DEP, MATP, TERV, IDV, HV, lot, decal: new Int8Array(lot.length), vu: 0 };  return { TER, CEL, DEP, MATP, vu: 0 };
+}
+// Rend le morceau (tx, ty), en le dessinant si besoin et si le budget de la trame le permet. null = pas encore prêt.
+let budgetTuiles = Infinity, tuilesVisibles = 0;
+function tuile(tx, ty) {
+  const cle = ty * 4096 + tx; let tu = tuiles.get(cle);
+  if (!tu) {
+    if (budgetTuiles <= 0) return null;
+    budgetTuiles--; tu = rendreTuile(tx, ty); tu.vu = horlogeTuiles; tuiles.set(cle, tu);      // daté AVANT le tri, sinon c'est lui qu'on jette
+    if (tuiles.size > Math.max(TUILES_MAX, tuilesVisibles * 1.8)) { let vieux = null, age = Infinity; for (const [c, o] of tuiles) if (o.vu < age) { age = o.vu; vieux = c; } tuiles.delete(vieux); }
+  }
+  tu.vu = horlogeTuiles; return tu;
+}
+function caseSous(px, py) {      // la case du monde dessinée au pixel (px, py) de l'image virtuelle, ou -1
+  if (px < 0 || py < 0 || px >= W || py >= HT) return -1;
+  const tu = tuiles.get((py >> 8) * 4096 + (px >> 8)); if (!tu) return -1;
+  const c = tu.CEL[(py & 255) * T + (px & 255)]; return c === 0xffffffff ? -1 : c;
+}
+
+/* ---------- sprites ---------- */
+function sprite(w, h) { return { w, h, px: new Uint32Array(w * h), ax: w >> 1 }; }
+/* ---------- végétation : arbres et décor de sous-bois, dessinés par calcul ---------- */
+// Essences du Sud-Ardèche. Pour chacune : palette de feuillage (5 tons), écorce (3 tons), et un gabarit :
+//   r rayon de couronne (m) et h hauteur (m) à l'échelle 1 · tronc : part de la hauteur sans feuilles · ep : épaisseur du tronc
+//   (fraction du rayon) · tordu : sinuosité du tronc (px) · touffes : nombre de masses de feuillage · etale : leur dispersion
+//   · masse : leur taille (fraction du rayon) · feuille : taille d'un bouquet de feuilles (px) · dense : remplissage (1 = plein)
+const ESSENCES = {
+  3: { nom: "chêne vert",      r: 4.0, h: 9.5,  tronc: 0.36, ep: 0.13, tordu: 2.5, touffes: 11, etale: 0.60, masse: 0.42, feuille: 2.6, dense: 1.55, fut: 2,
+       f: pal(["#131a13", "#1e2a1c", "#2c3d27", "#3e5334", "#546a44"]), e: pal(["#1e1915", "#322a23", "#473d33"]) },
+  4: { nom: "chêne pubescent", r: 4.6, h: 13.0, tronc: 0.46, ep: 0.11, tordu: 3.0, touffes: 8,  etale: 0.78, masse: 0.34, feuille: 3.0, dense: 1.10, fut: 1,
+       f: pal(["#1e2a16", "#30421f", "#48602b", "#647d38", "#839a49"]), e: pal(["#2a2520", "#433c33", "#5d5448"]) },
+  7: { nom: "châtaignier",     r: 5.2, h: 15.0, tronc: 0.4, ep: 0.16, tordu: 1.5, touffes: 9,  etale: 0.66, masse: 0.45, feuille: 3.4, dense: 1.40, fut: 1,
+       f: pal(["#1c2c14", "#2b441c", "#3f6126", "#598232", "#78a343"]), e: pal(["#2b2119", "#473628", "#634c38"]), fleur: abgr("#cfcf82") },
+  5: { nom: "pin",             r: 3.4, h: 17.0, tronc: 0.66, ep: 0.12, tordu: 0.8, touffes: 6,  etale: 0,    masse: 0,    feuille: 2.2, dense: 1.25, fut: 1,
+       f: pal(["#10201b", "#183128", "#234637", "#315c47", "#447559"]), e: pal(["#3a2219", "#643a27", "#8f5637"]) },
+  8: { nom: "olivier",         r: 2.8, h: 5.2,  tronc: 0.34, ep: 0.27, tordu: 3.5, touffes: 8,  etale: 0.74, masse: 0.40, feuille: 2.0, dense: 1.0, fut: 2,
+       f: pal(["#2f3a2e", "#465543", "#61735a", "#819375", "#a3b394"]), e: pal(["#34302a", "#544e44", "#766f62"]) },
+  9: { nom: "peuplier",        r: 1.9, h: 17.0, tronc: 0.22, ep: 0.16, tordu: 0.5, touffes: 10, etale: 0,    masse: 0,    feuille: 2.6, dense: 1.30, fut: 1,
+       f: pal(["#1c2e1a", "#2a4424", "#3b5d30", "#52793f", "#6e9653"]), e: pal(["#3a372f", "#5a564b", "#7c776a"]) },
+  0: { nom: "buis",            r: 1.2, h: 2.0,  tronc: 0, touffes: 4, etale: 0.45, masse: 0.62, feuille: 2.0, dense: 1.6,
+       f: pal(["#1f2b18", "#2f4222", "#455c2e", "#5f7a3c", "#7c984e"]) },
+  1: { nom: "genévrier",       r: 0.9, h: 3.0,  tronc: 0, touffes: 5, etale: 0,    masse: 0,    feuille: 1.8, dense: 1.5,
+       f: pal(["#1f2b1f", "#2d3e2b", "#3e5438", "#536c47", "#6c8559"]) },
+  2: { nom: "genêt",           r: 1.1, h: 1.9,  tronc: 0, touffes: 5, etale: 0.6,  masse: 0.45, feuille: 1.6, dense: 0.8,
+       f: pal(["#283420", "#3a4a2a", "#506336", "#687d44", "#839956"]), fleur: abgr("#dcc63e") },
+};
+function trait(s, x0, y0, x1, y1, ep, couleurs) {     // trait épais : clair à gauche, sombre à droite (branche)
+  const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
+  for (let k = 0; k <= n; k++) {
+    const x = Math.round(x0 + (x1 - x0) * k / n), y = Math.round(y0 + (y1 - y0) * k / n);
+    for (let e = 0; e < ep; e++) { const X = x + e - (ep >> 1); if (X >= 0 && X < s.w && y >= 0 && y < s.h) s.px[y * s.w + X] = couleurs[e === 0 && ep > 1 ? 2 : e === ep - 1 && ep > 2 ? 0 : 1]; }
+  }
+}
+function fut(s, x0, y0, x1, y1, ep0, ep1, ec, tordu, graine) {   // tronc : s'affine vers le haut, sinueux, écorce striée, pied élargi
+  const n = Math.max(1, Math.ceil(y0 - y1));
+  for (let k = 0; k <= n; k++) {
+    const u = k / n, y = Math.round(y0 - k), ep = Math.max(2, Math.round(ep0 + (ep1 - ep0) * u + (k < 3 ? 3 - k : 0)));
+    const x = Math.round(x0 + (x1 - x0) * u + Math.sin(u * 5 + graine) * tordu * Math.sin(u * 3.14));
+    for (let e = 0; e < ep; e++) {
+      const X = x + e - (ep >> 1); if (X < 0 || X >= s.w || y < 0 || y >= s.h) continue;
+      let t = e === 0 ? 2 : e >= ep - Math.max(1, ep >> 2) ? 0 : 1;
+      if (t === 1 && hasard2(X + graine, k >> 2) < 0.28) t = 0; else if (t === 1 && hasard2(X + graine * 3, k >> 1) > 0.9) t = 2;      // stries de l'écorce
+      s.px[y * s.w + X] = ec[t];
+    }
+  }
+}
+// Une masse de feuillage = des dizaines de petits bouquets de feuilles, chacun éclairé par le haut à gauche.
+// Les bouquets à l'ombre sont posés d'abord, les éclairés par-dessus : c'est ce qui donne du relief et un bord déchiqueté.
+function masse(s, cx, cy, a, b, es, base, graine) {
+  const n = Math.round(es.dense * a * b / (es.feuille * es.feuille)), L = [];
+  for (let k = 0; k < n; k++) { const an = hasard2(graine + k, 11) * 6.283, rr = Math.sqrt(hasard2(graine + k, 23)), u = Math.cos(an) * rr, v = Math.sin(an) * rr; L.push([u, v, -(u * 0.65 + v)]); }
+  L.sort((p, q) => p[2] - q[2]);
+  for (const [u, v, lum] of L) {
+    const x0 = cx + u * a, y0 = cy + v * b, r = es.feuille * (0.65 + hasard2(graine + (x0 * 3 | 0), y0 * 5 | 0) * 0.75), ton = base + lum * 1.3;
+    for (let y = Math.floor(y0 - r); y <= y0 + r; y++) for (let x = Math.floor(x0 - r); x <= x0 + r; x++) {
+      if (x < 0 || y < 0 || x >= s.w || y >= s.h) continue;
+      const dx = (x - x0) / r, dy = (y - y0) / r; if (dx * dx + dy * dy > 1) continue;
+      const t = ton - (dx * 0.6 + dy * 0.9) * 0.95;
+      s.px[y * s.w + x] = es.fleur && t > 2.6 && hasard2(x * 7 + graine, y) > (es.nom === "genêt" ? 0.72 : 0.94) ? es.fleur : es.f[t < 0 ? 0 : t > 4 ? 4 : Math.round(t)];
+    }
+  }
+}
+// Un arbre : fût (parfois double), charpentières qui vont chercher chaque masse de feuillage, puis le feuillage.
+// s.tronc = hauteur (px) sous laquelle rien ne bouge au vent ; s.coupe = hauteur au-dessus de laquelle le feuillage
+// s'efface autour du personnage pour laisser voir le sous-bois (jamais pour les buissons).
+function arbre(esp, graine, ech) {
+  const es = ESSENCES[esp], R = n => hasard2(graine * 131 + n * 7 + 1, esp * 17 + 3);
+  const rx = Math.max(5, Math.round(es.r * ech * PXM / 1.414)), hpx = Math.max(10, Math.round(es.h * ech * ZS));
+  const s = sprite(rx * 2 + 9, hpx + 4), cx = rx + 4, bas = s.h - 1;
+  const tronc = Math.round(hpx * es.tronc), ch = hpx - tronc, ry = ch / 2, cy = 2 + ry, M = [];
+  // 1. où sont les masses de feuillage
+  if (esp === 5) for (let n = 0; n < es.touffes; n++) {            // pin : des plateaux étagés, de part et d'autre du fût
+    const a = rx * (0.5 + R(40 + n) * 0.45) * (n === 0 ? 0.7 : 1);
+    M.push({ x: cx + (n === 0 ? 0 : (n % 2 ? 1 : -1) * (rx - a) * (0.5 + R(30 + n) * 0.5)), y: 4 + a * 0.4 + n * (ch * 0.82 / es.touffes), a, b: Math.max(3, a * 0.42) });
+  } else if (esp === 9 || esp === 1) for (let n = 0; n < es.touffes; n++) {   // peuplier, genévrier : une colonne qui s'effile
+    const u = n / (es.touffes - 1), a = rx * (0.45 + Math.sin(u * 2.6 + 0.35) * 0.55);
+    M.push({ x: cx + (R(30 + n) - 0.5) * rx * 0.3, y: 3 + a * 0.5 + u * (ch - a * 1.2), a, b: a * 1.15 });
+  } else for (let n = 0; n < es.touffes; n++) {                    // feuillus : un dôme de masses qui se recouvrent plus ou moins
+    const an = n / es.touffes * 6.283 + R(50 + n) * 0.9, f = n < 2 ? 0.12 : 0.4 + R(60 + n) * 0.6, a = (es.masse * (0.8 + R(70 + n) * 0.45)) * Math.min(rx, ry * 1.3);
+    M.push({ x: cx + Math.cos(an) * f * es.etale * rx, y: cy + Math.sin(an) * f * es.etale * ry * 0.95, a, b: a * 0.88 });
+  }
+  // 2. le bois
+  if (es.tronc) {
+    const ep = Math.max(3, Math.round(rx * es.ep)), fx = cx + (R(1) - 0.5) * rx * 0.3, fy = bas - tronc * (esp === 5 ? 1.25 : 0.95);
+    fut(s, cx, bas, fx, fy, ep, Math.max(2, ep * 0.6), es.e, es.tordu, graine);
+    if (es.fut === 2 && graine % 3) fut(s, cx + (graine & 1 ? 2 : -2), bas, fx + (graine & 1 ? 1 : -1) * rx * 0.3, fy + 2, ep * 0.75, 2, es.e, es.tordu * 1.3, graine + 5);
+    if (esp === 5) { fut(s, fx, fy, cx, 5, Math.max(2, ep * 0.6), 2, es.e, 0.5, graine); for (let b = 0; b < 3; b++) { const y = bas - tronc * (0.35 + b * 0.2), c = b % 2 ? 1 : -1; trait(s, cx, y, cx + c * rx * 0.22, y - 2, 1, es.e); } }     // moignons de branches mortes
+    for (const m of M) { const mx = (fx + m.x) / 2 + (m.x - fx) * 0.15, my = Math.max(fy, m.y) - Math.abs(m.x - fx) * 0.15, e2 = Math.max(1, Math.round(ep * 0.38)); trait(s, fx, Math.min(fy, bas - tronc * 0.8), mx, my, e2, es.e); trait(s, mx, my, m.x, m.y, Math.max(1, e2 - 1), es.e); }
+  }
+  // 3. le feuillage, des masses du fond (hautes) vers celles de devant (basses)
+  M.sort((p, q) => p.y - q.y);
+  M.forEach((m, n) => masse(s, m.x, m.y, m.a, m.b, es, 2.15 - (m.x - cx) / rx * 0.65 - (m.y - cy) / ry * 0.95, graine * 1000 + n * 97));
+  s.ax = cx; s.tronc = es.tronc ? tronc : 4; s.coupe = es.tronc ? Math.max(tronc, 10) : 999; s.rayon = es.r * ech; s.cime = hpx / ZS;
+  return s;
+}
+const ECORCES = { 4: ESSENCES[4].e, 5: ESSENCES[5].e, 6: pal(["#34312d", "#514d46", "#716c62"]) };
+// Petits objets du sol. Chaque milieu a sa liste : [probabilité par tirage, sprites possibles].
+function caillou(graine, a, palette) {
+  const b = Math.max(1, Math.round(a * 0.62)), s = sprite(a * 2 + 1, b * 2 + 1);
+  for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) { const u = (x - a) / (a + 0.3), v = (y - b) / (b + 0.3); if (u * u + v * v > 1) continue; const t = 2.5 - (u * 0.8 + v * 1.3) * 1.8 + (hasard2(x + graine, y) - 0.5); s.px[y * s.w + x] = palette[t < 0 ? 0 : t > 4 ? 4 : t | 0]; }
+  s.ax = a; return s;
+}
+function touffe(graine, palette, haut) {
+  const s = sprite(7, haut + 1);
+  for (let x = 0; x < 7; x++) { const h = Math.round(haut * (0.35 + hasard2(graine, x) * 0.65) * (1 - Math.abs(x - 3) / 5)); for (let y = 0; y < h; y++) s.px[(haut - y) * s.w + x] = palette[y === h - 1 ? 4 : y > h / 2 ? 3 : (x + graine) % 2 ? 2 : 1]; }
+  s.ax = 3; return s;
+}
+const SEMIS = (() => {
+  const brun = pal(["#2e231a", "#4a3828", "#6b5238"]), mousseux = pal(["#3a4636", "#56634d", "#768268", "#97a086", "#b9bfa6"]);
+  const g = [1, 2, 3, 4], cail = (pl, a) => g.map(n => caillou(n, a, pl));
+  const fleur = c => depuisMotif([".f.", "fvf", ".v."], { f: c, v: P.herbe[2] }), fleurs = P.fleurs.map(fleur).concat([fleur(abgr("#8f6fc0"))]);
+  const brindille = n => { const L = 6 + n * 2, s = sprite(L + 1, (L >> 1) + 2); for (let k = 0; k <= L; k++) { const x = n % 2 ? k : L - k; s.px[(k >> 1) * s.w + x] = brun[1]; if (k % 4 === 1) s.px[((k >> 1) + 1) * s.w + x] = brun[0]; } s.ax = L >> 1; return s; };
+  const champignon = [depuisMotif([".rr.", "rwrr", ".cc.", ".cc."], { r: abgr("#b5463a"), w: abgr("#f0e6d0"), c: abgr("#d9cdb0") }), depuisMotif([".bb.", "bbbb", ".cc."], { b: abgr("#8a6a45"), c: abgr("#d9cdb0") })];
+  const roseau = g.map(n => { const s = sprite(5, 12); for (let x = 0; x < 5; x += 2) { const h = 7 + (hasard2(n, x) * 5 | 0); for (let y = 0; y < h; y++) s.px[(11 - y) * 5 + x] = y >= h - 2 ? brun[2] : P.humide[2 + (y & 1)]; } s.ax = 2; return s; });
+  const T_ = { pre: g.map(n => touffe(n, P.herbe, 4 + n % 3)), sec: g.map(n => touffe(n + 9, P.seche, 4 + n % 3)), haut: g.map(n => touffe(n + 5, P.brousse, 6 + n % 3)), frais: g.map(n => touffe(n + 3, P.humide, 5 + n % 3)) };
+  const petits = cail(P.roche, 1).concat(cail(P.roche, 2)), moyens = cail(P.roche, 3).concat(cail(P.roche, 4)), gros = cail(P.roche, 6), galets = cail(P.galets, 1).concat(cail(P.galets, 2), cail(P.galets, 3));
+  const M = {      // [seuil cumulé, sprites]
+    pre:      [[0.30, T_.pre.concat(T_.sec)], [0.322, petits], [0.357, fleurs], [0.363, moyens], [0.364, gros]],
+    humide:   [[0.34, T_.frais], [0.39, fleurs], [0.43, petits], [0.50, roseau]],
+    brousse:  [[0.32, T_.haut], [0.36, petits], [0.375, moyens], [0.379, gros], [0.41, fleurs]],
+    bois:     [[0.12, g.map(brindille)], [0.15, cail(mousseux, 2).concat(cail(mousseux, 3))], [0.165, champignon], [0.24, T_.haut], [0.244, cail(mousseux, 6)]],
+    pierrier: [[0.16, petits], [0.25, moyens], [0.27, gros], [0.45, T_.sec]],
+    berge:    [[0.55, galets], [0.68, roseau], [0.72, moyens]],
+  };
+  return { tirer(milieu, h, h2) { for (const [seuil, liste] of M[milieu]) if (h < seuil) return liste[h2 * liste.length | 0]; return null; } };
+})();
+function arbreMort(graine, ech) {                      // arbre sec, penché, qui finira par tomber
+  const R = n => hasard2(graine * 59 + n, 77), hpx = Math.round(6.5 * ech * ZS), penche = (graine & 1 ? 1 : -1) * hpx * (0.18 + R(1) * 0.25), ep = Math.max(2, Math.round(PXM * 0.22));
+  const s = sprite(Math.round(Math.abs(penche) * 2 + hpx * 0.5) + 8, hpx + 3), cx = s.w >> 1, bas = s.h - 1, ec = ECORCES[6];
+  trait(s, cx, bas, cx + penche, 2, ep, ec);
+  for (let b = 0; b < 3; b++) { const u = 0.45 + b * 0.18, x = cx + penche * u, y = bas - (bas - 2) * u, cote = b % 2 ? 1 : -1; trait(s, x, y, x + cote * hpx * (0.1 + R(5 + b) * 0.12), y - hpx * (0.06 + R(9 + b) * 0.1), Math.max(1, ep - 2), ec); }
+  s.ax = cx; s.tronc = 999; s.coupe = 999; s.rayon = 0.5; s.cime = hpx / ZS * 0.5;
+  return s;
+}
+function troncCouche(graine) {                         // suit un axe du sol : 2 px en travers pour 1 px de haut
+  const R = n => hasard2(graine * 97 + n, 41), L = Math.round((2.2 + R(1) * 3.2) * PXM / 2), ep = Math.round(PXM * (0.28 + R(2) * 0.14)), sens = graine & 1;
+  const s = sprite(L + 3, (L >> 1) + ep + 2), ec = ECORCES[graine % 3 === 0 ? 5 : 4], mousse = abgr("#4f6a35"), bout = [abgr("#b89868"), abgr("#9a7c50")];
+  for (let k = 0; k <= L; k++) {
+    const x = (sens ? k : L - k) + 1, y0 = k >> 1;
+    for (let e = 0; e < ep; e++) s.px[(y0 + e) * s.w + x] = k >= L - 1 && e > 0 && e < ep - 1 ? bout[e & 1] : e === 0 ? (hasard2(k >> 2, graine) < 0.35 ? mousse : ec[2]) : e >= ep - 2 ? ec[0] : ec[1];
+  }
+  s.ax = s.w >> 1; return s;
+}
+function souche(graine) {
+  const w = Math.round(PXM * (0.4 + (graine & 3) * 0.06)), h = Math.round(PXM * 0.32), s = sprite(w + 2, h + 4), ec = ECORCES[4], clair = abgr("#a88a5e"), coeur = abgr("#7d6240");
+  for (let y = 2; y < s.h; y++) for (let x = 1; x <= w; x++) s.px[y * s.w + x] = x === 1 ? ec[2] : x >= w - 1 ? ec[0] : ec[1];
+  for (let y = 0; y < 4; y++) for (let x = 1; x <= w; x++) { const u = (x - 1 - (w - 1) / 2) / (w / 2), v = (y - 1.5) / 2; if (u * u + v * v <= 1) s.px[y * s.w + x] = u * u + v * v < 0.2 ? coeur : clair; }
+  s.ax = s.w >> 1; return s;
+}
+function rocher(graine) {
+  const R = n => hasard2(graine * 37 + n, 5), a = Math.round(PXM * (0.3 + R(1) * 0.55)), b = Math.max(3, Math.round(a * (0.55 + R(2) * 0.2))), s = sprite(a * 2 + 2, b * 2 + 1);
+  for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) {
+    const u = (x - a - 0.5) / a, v = (y - b) / b; if (u * u + v * v > 0.92 + 0.12 * hasard2(x >> 1, graine)) continue;
+    const t = 2.4 - (u * 0.8 + v * 1.2) * 1.7 + (hasard2(x >> 1, (y >> 1) + graine * 7) - 0.5) * 1.1;
+    s.px[y * s.w + x] = P.roche[t < 0 ? 0 : t > 4 ? 4 : t | 0];
+  }
+  s.ax = s.w >> 1; return s;
+}
+function fougere(graine) {
+  const s = sprite(13, 8), v = pal(["#3d5a2a", "#577a38", "#74994a"]);
+  for (let n = 0; n < 6; n++) { const an = -2.75 + n * 0.47 + (hasard2(graine, n) - 0.5) * 0.2, L = 4.5 + hasard2(graine + 9, n) * 2; trait(s, 6, 7, 6 + Math.cos(an) * L, 7 + Math.sin(an) * L * 0.9, 1, [v[n % 3], v[n % 3], v[n % 3]]); }
+  s.ax = 6; return s;
+}
+
+function depuisMotif(lignes, couleurs) {
+  const s = sprite(lignes[0].length, lignes.length);
+  lignes.forEach((l, y) => [...l].forEach((ch, x) => { if (ch !== ".") s.px[y * s.w + x] = couleurs[ch]; }));
+  return s;
+}
+function miroir(s) { const m = sprite(s.w, s.h); for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) m.px[y * s.w + x] = s.px[y * s.w + s.w - 1 - x]; return m; }
+// Personnages : 12 x 22 px, soit ~1,3 fois leur taille réelle à 16 px par mètre,
+// pour qu'on distingue cheveux, visage, tunique, ceinture, jambes et bottes. Trois images : arrêt, pas gauche, pas droit.
+const CP = { h: abgr("#4a3320"), H: abgr("#33230f"), s: abgr("#dba77f"), S: abgr("#b98360"), e: abgr("#2a1c14"),
+  t: abgr("#8c3b2e"), T: abgr("#662a22"), U: abgr("#a9523f"), c: abgr("#3a2a1c"), l: abgr("#4a4a58"), L: abgr("#34343f"), b: abgr("#241c18") };
+const TETE = {"face": ["....hhhh....", "...hhhhhh...", "..hhhhhhhh..", "..hhsssshh..", "..hsesseSh..", "...sssssS...", "....ssSS...."], "dos": ["....hhhh....", "...hhhhhh...", "..hhhhhhhh..", "..hhhhhhhH..", "..hHhhhhHH..", "...hhhhHH...", "....sSSS...."], "profil": ["....hhhhh...", "...hhhhhhh..", "...hhhhhhH..", "...sshhhhH..", "..sesshhH...", "..sssshH....", "....sS......"]};
+const CORPS = {"face": ["..UttttttT..", ".UUttttttTT.", ".tUttttttTt.", ".tUttttttTt.", ".sUccccccTs.", "..UttttttT..", "..UttttttT..", "..ttttttTT.."], "dos": ["..UttttttT..", ".UUttttttTT.", ".tUttttttTt.", ".tUttttttTt.", ".sUccccccTs.", "..UttttTTT..", "..UtttTTTT..", "..tttTTTTT.."], "profil": ["....UtttT...", "....UtttT...", "....UtUtT...", "....UtUtT...", "....UcscT...", "....UtttT...", "....UtttT...", "....ttttT..."]};
+const JAMBES = {"face": [["...ll..ll...", "...ll..LL...", "...ll..LL...", "...ll..LL...", "...ll..LL...", "...bb..bb...", "..bbb..bbb.."], ["...ll..ll...", "...ll..LL...", "...ll..LL...", "...bb..LL...", "..bbb..LL...", ".......bb...", ".......bbb.."], ["...ll..ll...", "...ll..LL...", "...ll..LL...", "...ll..bb...", "...ll..bbb..", "...bb.......", "..bbb......."]], "profil": [[".....lL.....", ".....lL.....", ".....lL.....", ".....lL.....", ".....lL.....", ".....bb.....", "....bbb....."], [".....lL.....", "....llLL....", "....ll.LL...", "...ll..LL...", "...ll...LL..", "...bb...bb..", "..bbb..bbb.."], [".....lL.....", ".....lL.....", ".....lLL....", ".....ll.L...", ".....ll.....", ".....bb.....", "....bbb....."]], "dos": [["...ll..ll...", "...ll..LL...", "...ll..LL...", "...ll..LL...", "...ll..LL...", "...bb..bb...", "..bbb..bbb.."], ["...ll..ll...", "...ll..LL...", "...ll..LL...", "...bb..LL...", "..bbb..LL...", ".......bb...", ".......bbb.."], ["...ll..ll...", "...ll..LL...", "...ll..LL...", "...ll..bb...", "...ll..bbb..", "...bb.......", "..bbb......."]]};
+function eclaircir(hex, f) { const v = parseInt(hex.slice(1), 16), k = x => Math.min(255, Math.round(x * f)); return "#" + ((k(v >> 16) << 16) | (k(v >> 8 & 255) << 8) | k(v & 255)).toString(16).padStart(6, "0"); }
+function gabarit(tunique, sombre) {       // un jeu de sprites de personnage pour une couleur de tunique
+  const cp = { ...CP, t: abgr(tunique), T: abgr(sombre), U: abgr(eclaircir(tunique, 1.22)) }, g = {};
+  for (const vue of ["face", "dos", "profil"]) g[vue] = JAMBES[vue].map(j => depuisMotif([...TETE[vue], ...CORPS[vue], ...j], cp));
+  g.profilD = g.profil.map(miroir); return g;
+}
+function agrandir(s0, k) { const g = sprite(s0.w * k, s0.h * k); for (let y = 0; y < g.h; y++) for (let x = 0; x < g.w; x++) g.px[y * g.w + x] = s0.px[(y / k | 0) * s0.w + (x / k | 0)]; return g; }
+const PERSO = gabarit("#8c3b2e", "#662a22");
+const HABITS = { sans: gabarit("#8a8478", "#666055"), chasseur: gabarit("#4f6b3a", "#3a5029"), "pêcheur": gabarit("#3f6c8a", "#2d5068"), marchand: gabarit("#b08a2e", "#84661f") };
+const CM = { m: abgr("#7a5c40"), p: abgr("#c9b48a"), k: abgr("#3a2c20"), l: abgr("#2e241c") };
+const MULE = [depuisMotif([".......k.k", ".......mm.", ".ppppmmmm.", "mppppmmm..", "mmmmmmmm..", ".l..l.l...", ".l..l.l..."], CM), depuisMotif([".......k.k", ".......mm.", ".ppppmmmm.", "mppppmmm..", "mmmmmmmm..", ".l..l.l...", "l...l...l."], CM)].map(m => agrandir(m, 2));
+const MULE_G = MULE.map(miroir);
+const BALLOT = { gibier: depuisMotif(["bbb", "bcb"], { b: abgr("#6b4a32"), c: abgr("#a0785a") }), poisson: depuisMotif(["bbb", "bcb"], { b: abgr("#7fa8b8"), c: abgr("#cfe0e4") }) };
+const CC = { w: abgr("#d6cfbd"), g: abgr("#a89c84"), k: abgr("#4a4036"), l: abgr("#3a322a") };
+const CHEVRE0 = [depuisMotif([".....k.k", ".....ww.", ".wwwwww.", "wwwwwg..", "wwwwwg..", ".l..l...", ".l..l..."], CC), depuisMotif([".....k.k", ".....ww.", ".wwwwww.", "wwwwwg..", "wwwwwg..", ".l..l...", "l....l.."], CC)];
+const CHEVRE = CHEVRE0.map(m => agrandir(m, 2)), CHEVRE_G = CHEVRE.map(miroir);
+// Faune sauvage, tête à droite : sanglier (16 x 10) et chevreuil (14 x 15), deux images de marche.
+const CF = { k: abgr("#3a2f28"), K: abgr("#54463b"), g: abgr("#6b5a4c"), w: abgr("#e4dccb"), l: abgr("#241d18"), e: abgr("#0f0c0a"), c: abgr("#9a6e45"), C: abgr("#c9a67c"), n: abgr("#2a1c14") };
+const MOTIFS_FAUNE = {"sanglier": [["......kkkkkk....", "...kkkkkkkkkkk..", "..kkkKKkkkkkkkk.", ".kkkKKkkkkkkkkke", ".kkkkkkkkkkkkkkk", "kkkkkkkkkkkkkkgg", ".kkkkkkkkkkkkkw.", "..kk.kk...kk.kk.", "..kk.kk...kk.kk.", "..ll.ll...ll.ll."], ["......kkkkkk....", "...kkkkkkkkkkk..", "..kkkKKkkkkkkkk.", ".kkkKKkkkkkkkkke", ".kkkkkkkkkkkkkkk", "kkkkkkkkkkkkkkgg", ".kkkkkkkkkkkkkw.", ".kk..kk..kk..kk.", ".k....k..k....k.", ".l....l..l....l."]], "chevreuil": [["...........k.k", "...........ccc", "..........cccc", "..........cc.n", ".........ccc..", ".wcccccccccc..", "wwccccccccc...", ".cccccccccc...", ".ccCCCCCCcc...", ".cc......cc...", ".c.c....c.c...", ".c.c....c.c...", ".c.c....c.c...", ".c.c....c.c...", ".l.l....l.l..."], ["...........k.k", "...........ccc", "..........cccc", "..........cc.n", ".........ccc..", ".wcccccccccc..", "wwccccccccc...", ".cccccccccc...", ".ccCCCCCCcc...", ".cc......cc...", "c..c....c..c..", "c...c..c...c..", "c...c..c...c..", "c...c..c...c..", "l...l..l...l.."]]};
+const SPR_FAUNE = {}; for (const nom in MOTIFS_FAUNE) { const d = MOTIFS_FAUNE[nom].map(m => depuisMotif(m, { ...CF, k: nom === "chevreuil" ? abgr("#5a3d25") : CF.k, l: nom === "chevreuil" ? abgr("#2a2018") : CF.l })); SPR_FAUNE[nom] = { d, g: d.map(miroir) }; }
+const RAPACE = [depuisMotif(["k.....k", ".kk.kk.", "...k..."], CC), depuisMotif([".......", "kkk.kkk", "...k..."], CC)].map(m => agrandir(m, 2));
+
+const ARBRES = new Map();        // arbres rangés par morceau d'écran (même découpage que le terrain)
+let nbArbres = 0, essencesPlantees = {};
+function planterArbres() {
+  const A = window.ARBRES, banque = {}, tanE = Math.tan(ELEV);
+  const obtenir = (esp, v, ech) => { const e = Math.max(0.5, Math.min(1.6, Math.round(ech * 5) / 5)), cle = esp + "_" + (v & 3) + "_" + e; return banque[cle] || (banque[cle] = esp === 6 ? arbreMort((v & 3) + 1, e) : arbre(esp, (v & 3) + esp * 4 + 1, e)); };
+  const ranger = (x, y, cel, spr, sol) => {
+    const [sx, sy] = ecran(x, y, bilin(G, x, y)), a = { sx: Math.round(sx), sy: Math.round(sy), dep: (x + y) / PAS, cel, spr, sol };
+    const cle = (a.sy >> 8) * 4096 + (a.sx >> 8); let lot = ARBRES.get(cle); if (!lot) ARBRES.set(cle, lot = []); lot.push(a);
+  };
+  const compte = {}; essencesPlantees = compte;
+  const cone = depuisMotif([".bc.", "bccb", ".bb."], { b: abgr("#4f3520"), c: abgr("#8a6238") });
+  for (let t = 0; t < A.length; t += 5) {
+    const x = A[t] / 10, y = A[t + 1] / 10, cel = Math.round(y) * NX + Math.round(x);
+    if (BLOQ[cel] || EAU[cel]) continue;
+    // Éclaircie : on garde un arbre sur cinq et trois arbustes sur dix ; chacun est dessiné grand, avec un long fût nu,
+    // pour qu'on circule entre des troncs sous une voûte haute au lieu de survoler un tapis de boules.
+    const tir = hasard(t * 31 + 7), tir2 = hasard(t * 57 + 19), esp0 = A[t + 2];
+    if (hasard(t * 17 + 3) > (esp0 === 0 ? 0.3 : 0.2) && !(PEUPLEMENT && PEUPLEMENT[cel] === 4 && esp0 !== 0)) continue;      // sauf dans les vergers, déjà clairsemés
+    // Essence. Exposition du versant : sud > 0 = adret (sec, chaud), sud < 0 = ubac (frais).
+    const k3 = Math.max(3, Math.min(NX - 4, Math.round(x))) + Math.max(3, Math.min(NY - 4, Math.round(y))) * NX;
+    const gx = SOL[k3 + 3] - SOL[k3 - 3], gy = SOL[k3 + 3 * NX] - SOL[k3 - 3 * NX], pente = Math.hypot(gx, gy) / 6, sud = pente > 0.05 ? -gy / (pente * 6) : 0;
+    const peup = PEUPLEMENT ? PEUPLEMENT[cel] : esp0 === 4 ? 1 : 0;
+    let esp;
+    if (esp0 === 0) esp = tir < 0.25 ? 1 : tir < 0.5 && sud > 0.15 ? 2 : 0;                    // genévrier, genêt sur les adrets, sinon buis
+    else if (DIST_EAU[cel] <= 9) esp = 9;                                                         // bord de l'eau : peupliers
+    else if (peup === 4) esp = 8;                                                                  // verger : oliviers
+    else if (tir < 0.02) esp = 6;                                                                  // un arbre sur cinquante est mort sur pied
+    else if (peup === 2 || (peup === 3 && tir2 < 0.45)) esp = 5;                                  // forêt de conifères, ou la moitié d'une forêt mixte : pins
+    else if (peup === 1 || peup === 3) esp = sud < -0.15 ? (tir2 < 0.6 ? 7 : 4) : sud > 0.25 ? (tir2 < 0.55 ? 3 : 4) : (tir2 < 0.2 ? 7 : 4);   // feuillus : châtaignier à l'ubac, chêne vert à l'adret, chêne pubescent partout
+    else esp = sud > 0.3 && pente < 0.35 && bruit(x / 60 + 5, y / 60 + 2) > 0.68 ? 8 : sud > 0 ? (tir2 < 0.75 ? 3 : 4) : (tir2 < 0.4 ? 3 : 4);   // hors forêt : chênes épars, vieux oliviers sur les terrasses d'adret
+    compte[esp] = (compte[esp] || 0) + 1;
+    const spr = obtenir(esp, A[t + 4], esp === 8 ? Math.max(0.9, A[t + 3] / 100) : A[t + 3] / 100); ranger(x, y, cel, spr, false); nbArbres++;
+    // Ombre portée au sol : un disque décalé à l'opposé du soleil, noté dans la grille à 1 m.
+    const dec = spr.cime * 0.55 / tanE, ox = x - SUN[0] * dec, oy = y - SUN[1] * dec, r = spr.rayon * 1.05;
+    for (let j = Math.max(0, Math.ceil(oy - r)); j <= Math.min(NY - 1, oy + r); j++) for (let i = Math.max(0, Math.ceil(ox - r)); i <= Math.min(NX - 1, ox + r); i++)
+      if (Math.hypot(i - ox, j - oy) <= r) OMBA[j * NX + i] = 1;
+    if (esp === 5) for (let q = 0; q < 4; q++) {                                  // pommes de pin tombées sous les pins
+      const px = x + (hasard(t * 13 + q) - 0.5) * spr.rayon * 2.6, py = y + (hasard(t * 17 + q) - 0.5) * spr.rayon * 2.6;
+      if (px > 3 && py > 3 && px < LARG - 3 && py < HAUTEUR - 3) { const c2 = Math.round(py) * NX + Math.round(px); if (!EAU[c2] && !BLOQ[c2]) ranger(px, py, c2, cone, true); }
+    }
+  }
+  // Décor du sous-bois, posé au sol : troncs tombés, souches, rochers, fougères. Tirage stable par case.
+  const D4 = { tronc: [1, 2, 3, 4, 5, 6].map(troncCouche), souche: [1, 2, 3, 4].map(souche), rocher: [1, 2, 3, 4, 5, 6].map(rocher), fougere: [1, 2, 3, 4].map(fougere) };
+  for (let j = 6; j < NY - 6; j++) for (let i = 6; i < NX - 6; i++) {
+    const k = j * NX + i; if (EAU[k] || BLOQ[k]) continue;
+    const cv = COUVERT ? COUVERT[k] : OMBA[k] ? 50 : 0; if (cv < 4) continue;
+    const h = hasard2(i, j * 7919 + 5), n = h * 1e6 | 0, x = i + (hasard2(i + 3, j) - 0.5) * 0.8, y = j + (hasard2(i, j + 3) - 0.5) * 0.8;
+    if (cv >= 30) {
+      if (h < 0.0022) ranger(x, y, k, D4.tronc[n % 6], true); else if (h < 0.0045) ranger(x, y, k, D4.souche[n % 4], true);
+      else if (h < 0.0075) ranger(x, y, k, D4.rocher[n % 6], true); else if (h < 0.035) ranger(x, y, k, D4.fougere[n % 4], true);
+    } else if (h < 0.004) ranger(x, y, k, D4.rocher[n % 6], true);
+  }
+}
+
+/* ---------- monde vivant ---------- */
+function solA(x, y) {            // altitude du sol jouable, bilinéaire sur la grille à 1 m
+  const a = Math.max(0, Math.min(x | 0, NX - 2)), b = Math.max(0, Math.min(y | 0, NY - 2)), fu = x - a, fv = y - b, r = b * NX + a;
+  return (SOL[r] * (1 - fu) + SOL[r + 1] * fu) * (1 - fv) + (SOL[r + NX] * (1 - fu) + SOL[r + NX + 1] * fu) * fv;
+}
+function libre(x0, y0, x1, y1, gueMax, penteMax = 1.0) {
+  if (x1 < 2 || y1 < 2 || x1 > LARG - 2 || y1 > HAUTEUR - 2) return false;
+  const cel = Math.round(y1) * NX + Math.round(x1);
+  if (BLOQ[cel] || PROF_EAU[cel] > gueMax) return false;
+  const dist = Math.hypot(x1 - x0, y1 - y0); if (dist < 1e-6) return true;
+  // Pente mesurée sur 50 cm dans le sens de la marche (pas sur le micro-pas d'une trame) : pas plus raide que 45°.
+  const f = Math.max(1, 0.5 / dist);
+  return Math.abs(solA(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f) - solA(x0, y0)) / (dist * f) <= penteMax;
+}
+const joueur = { x: 0, y: 0, vue: "face", pas: 0, route: [], but: null, bloque: 0, essais: 0, procheMin: 1e9, poids: 1 };
+const chevres = [], rapaces = [], hardes = [], faune = [];
+const ESPECES = { sanglier: { fuite: 26, vit: 1.1, course: 6.5, rayon: 55 }, chevreuil: { fuite: 38, vit: 1.3, course: 8.5, rayon: 85 } };
+function peupler() {
+  if (D.depart) { joueur.x = D.depart[0]; joueur.y = D.depart[1]; } else { joueur.x = D.maison[0] + 8; joueur.y = D.maison[1] + 6; }
+  for (let t = 0; t < 400 && (BLOQ[Math.round(joueur.y) * NX + Math.round(joueur.x)]); t++) joueur.x += 1;
+  let essais = 0;
+  const nbHardes = Math.max(3, Math.min(60, Math.round(LARG * HAUTEUR / 70000)));
+  while (hardes.length < nbHardes && essais++ < 20000) {       // des hardes de six chèvres sur des replats, une pour ~7 hectares
+    const hx = 30 + hasard(essais * 3) * (LARG - 60), hy = 30 + hasard(essais * 3 + 1) * (HAUTEUR - 60), cel = Math.round(hy) * NX + Math.round(hx);
+    if (EAU[cel] || BLOQ[cel] || Math.abs(solA(hx + 3, hy) - solA(hx - 3, hy)) > 1.2 || Math.abs(solA(hx, hy + 3) - solA(hx, hy - 3)) > 1.2) continue;
+    hardes.push({ hx, hy });
+    for (let q = 0; q < 6; q++) chevres.push({ x: hx + (hasard(essais * 7 + q) - 0.5) * 8, y: hy + (hasard(essais * 11 + q) - 0.5) * 8, hx, hy, bx: hx, by: hy, attente: hasard(q + essais) * 4, pas: 0, gauche: false });
+  }
+  // Faune sauvage : des compagnies de sangliers en forêt, des chevreuils isolés ou par deux. Ils vont et viennent
+  // sur de longues distances et détalent quand on approche.
+  const enForet = k => COUVERT ? COUVERT[k] >= 40 : true, surface = LARG * HAUTEUR;
+  const semer = (type, groupes, taille, foret) => {
+    for (let g = 0, e = 0; g < groupes && e < 40000; e++) {
+      const hx = 20 + hasard(e * 5 + type.length) * (LARG - 40), hy = 20 + hasard(e * 5 + 2 + type.length) * (HAUTEUR - 40), k = Math.round(hy) * NX + Math.round(hx);
+      if (EAU[k] || BLOQ[k] || enForet(k) !== foret) continue;
+      const n = taille[0] + (hasard(e) * (taille[1] - taille[0] + 1) | 0);
+      for (let q = 0; q < n; q++) faune.push({ type, x: hx + (hasard(e * 9 + q) - 0.5) * 6, y: hy + (hasard(e * 11 + q) - 0.5) * 6, hx, hy, bx: hx, by: hy, attente: hasard(q + e) * 5, peur: 0, pas: 0, gauche: false });
+      g++;
+    }
+  };
+  semer("sanglier", Math.max(2, Math.min(45, Math.round(surface / 110000))), [3, 5], true);
+  semer("chevreuil", Math.max(3, Math.min(70, Math.round(surface / 75000))), [1, 2], !!COUVERT);
+  for (let q = 0; q < 3; q++) rapaces.push({ cx: joueur.x - 60 + q * 70, cy: joueur.y - 40 + q * 45, r: 35 + q * 12, a: q * 2, alt: ZR + 25 + q * 10 });
+}
+/* ---------- aller à un point : plus court chemin sur la grille à 1 m (A*) ----------
+   Mêmes règles que la marche : pas de pente à plus de 45°, pas d'eau profonde, pas de mur.
+   Le coût pénalise la pente et l'eau, donc le trajet contourne plutôt que de grimper.
+   But inaccessible : on va au point atteignable le plus proche. */
+const USURE = new Float32Array(NN), TRACE = new Uint8Array(NN), FOULEE = new Uint8Array(NN), FOULEES = [];      // passages cumulés par case, et niveau de chemin visible (0 à 3)
+const A_G = new Float32Array(NN), A_DE = new Int32Array(NN), A_ETAT = new Uint8Array(NN);
+function passable(a, b, dist) { return !BLOQ[b] && PROF_EAU[b] <= 3 && Math.abs(SOL[b] - SOL[a]) <= 0.8 * dist; }      // un peu plus prudent que la marche au clavier
+function droit(x0, y0, x1, y1) {            // peut-on marcher en ligne droite de l'un à l'autre ?
+  const d = Math.hypot(x1 - x0, y1 - y0), n = Math.ceil(d / 0.5); let px = x0, py = y0;
+  for (let k = 1; k <= n; k++) { const x = x0 + (x1 - x0) * k / n, y = y0 + (y1 - y0) * k / n; if (!libre(px, py, x, y, 3, 0.9)) return false; px = x; py = y; }
+  return true;
+}
+// habitant = true : le sol déjà foulé coûte jusqu'à deux fois moins, donc les habitants se suivent
+// et le passage répété creuse un chemin (c'est tout le mécanisme des « chemins du désir »).
+function trajet(x0, y0, x1, y1, habitant) {
+  const dep = Math.round(y0) * NX + Math.round(x0), gx = Math.max(2, Math.min(NX - 3, Math.round(x1))), gy = Math.max(2, Math.min(NY - 3, Math.round(y1))), arr = gy * NX + gx;
+  const kh = habitant ? 0.6 : 1;
+  A_ETAT.fill(0); const tasK = [dep], tasF = [0]; A_G[dep] = 0; A_DE[dep] = -1; A_ETAT[dep] = 1;
+  let meilleur = dep, meilleurH = Math.hypot(gx - Math.round(x0), gy - Math.round(y0)), vus = 0;
+  const plafond = habitant ? 90000 : 1500000;
+  while (tasK.length && vus++ < plafond) {
+    const k = tasK[0], dernK = tasK.pop(), dernF = tasF.pop();       // extraction du minimum d'un tas binaire
+    if (tasK.length) { let i = 0; const n = tasK.length; for (;;) { let c = 2 * i + 1; if (c >= n) break; if (c + 1 < n && tasF[c + 1] < tasF[c]) c++; if (tasF[c] >= dernF) break; tasK[i] = tasK[c]; tasF[i] = tasF[c]; i = c; } tasK[i] = dernK; tasF[i] = dernF; }
+    if (A_ETAT[k] === 2) continue; A_ETAT[k] = 2;
+    if (k === arr) { meilleur = k; break; }
+    const kx = k % NX, ky = k / NX | 0, h0 = Math.hypot(gx - kx, gy - ky);
+    if (h0 < meilleurH) { meilleurH = h0; meilleur = k; }
+    for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+      if (!a && !b) continue;
+      const x = kx + a, y = ky + b; if (x < 2 || y < 2 || x > NX - 3 || y > NY - 3) continue;
+      const v = y * NX + x, dist = a && b ? 1.4142 : 1;
+      if (A_ETAT[v] === 2 || !passable(k, v, dist)) continue;
+      if (a && b && (BLOQ[ky * NX + x] || BLOQ[y * NX + kx])) continue;          // pas de passage en coin de mur
+      let pas = dist * (EAU[v] ? 2 : 1); if (habitant) pas *= 1 - 0.5 * Math.min(1, USURE[v] / 30);
+      if (BLOQ[v - 1] || BLOQ[v + 1] || BLOQ[v - NX] || BLOQ[v + NX]) pas += 2;      // on ne rase pas les murs : sinon on accroche les angles
+      const g = A_G[k] + pas + 2.5 * Math.abs(SOL[v] - SOL[k]);
+      if (A_ETAT[v] === 1 && g >= A_G[v]) continue;
+      A_G[v] = g; A_DE[v] = k; A_ETAT[v] = 1;
+      let i = tasK.length; const f = g + kh * Math.hypot(gx - x, gy - y); tasK.push(v); tasF.push(f);
+      while (i > 0) { const p = (i - 1) >> 1; if (tasF[p] <= f) break; tasK[i] = tasK[p]; tasF[i] = tasF[p]; i = p; } tasK[i] = v; tasF[i] = f;
+    }
+  }
+  const pts = []; for (let k = meilleur; k !== -1; k = A_DE[k]) pts.push([k % NX, k / NX | 0]); pts.reverse();
+  if (meilleur === arr && pts.length) pts[pts.length - 1] = [Math.max(2, Math.min(NX - 3, x1)), Math.max(2, Math.min(NY - 3, y1))];
+  // On retire les points inutiles : on garde le plus lointain qu'on peut rejoindre en ligne droite
+  // (peu de recul pour les habitants, sinon ils couperaient tout droit au lieu de suivre le chemin).
+  const lisse = [], recul = habitant ? 4 : 40; let i = 0, cx = x0, cy = y0;
+  while (i < pts.length - 1) { let j = Math.min(pts.length - 1, i + recul); while (j > i + 1 && !droit(cx, cy, pts[j][0], pts[j][1])) j--; lisse.push(pts[j]); [cx, cy] = pts[j]; i = j; }
+  return lisse;
+}
+function partir(e, x, y, reprise) {
+  e.route = trajet(e.x, e.y, x, y, e !== joueur);
+  e.but = e.route.length ? { x: e.route[e.route.length - 1][0], y: e.route[e.route.length - 1][1] } : null;
+  e.bloque = 0; e.procheMin = 1e9; if (!reprise) e.essais = 0;
+}
+function allerVers(x, y) { partir(joueur, x, y); }
+
+// Un pas de marche pour n'importe quel marcheur. (dx, dy) : direction imposée (clavier), ou 0, 0 pour suivre e.route.
+function marcher(e, dt, vit, dx, dy) {
+  if (dx || dy) { e.route = []; e.but = null; }             // le clavier reprend la main
+  else if (e.route.length) {
+    while (e.route.length > 1 && Math.hypot(e.route[0][0] - e.x, e.route[0][1] - e.y) < 0.6) e.route.shift();
+    const dd = Math.hypot(e.route[0][0] - e.x, e.route[0][1] - e.y);
+    if (e.route.length === 1 && dd < 0.3) { e.route = []; e.but = null; }
+    else {
+      dx = (e.route[0][0] - e.x) / dd; dy = (e.route[0][1] - e.y) / dd;
+      // Sans progrès vers le prochain point pendant 1,5 s : on recalcule ; au troisième échec on renonce.
+      const reste = dd + e.route.length * 1000;
+      if (reste < e.procheMin - 0.05) { e.procheMin = reste; e.bloque = 0; }
+      else if ((e.bloque += dt) > 1.5) { if (++e.essais > 3) { e.route = []; e.but = null; dx = dy = 0; } else { const b = e.but; partir(e, b.x, b.y, true); return; } }
+    }
+  }
+  const suivi = e.route.length > 0;
+  if (!dx && !dy) { e.pas = 0; return; }
+  const l = Math.hypot(dx, dy); dx /= l; dy /= l;
+  const ex = dx - dy, ey = dx + dy;       // direction à l'écran
+  e.vue = Math.abs(ex) > Math.abs(ey) * 1.2 ? (ex > 0 ? "profilD" : "profil") : ey > 0 ? "face" : "dos";
+  let v = vit * dt;
+  const cel = Math.round(e.y) * NX + Math.round(e.x); if (EAU[cel]) v *= 0.5;
+  const pente = (solA(e.x + dx * 0.5, e.y + dy * 0.5) - solA(e.x, e.y)) / 0.5; if (pente > 0) v /= 1 + 1.6 * pente;
+  const { x, y } = e;
+  // En suivi de trajet, le chemin a déjà été validé sur la grille : on tolère un ressaut local.
+  if (libre(x, y, x + dx * v, y + dy * v, 3, suivi ? 1.5 : 1.0)) { e.x += dx * v; e.y += dy * v; USURE[cel] += v * e.poids; if (!FOULEE[cel]) for (const q of [cel, cel - 1, cel + 1, cel - NX, cel + NX]) if (!FOULEE[q]) { FOULEE[q] = 1; FOULEES.push(q); } }
+  else if (dx && libre(x, y, x + Math.sign(dx) * v, y, 3)) e.x += Math.sign(dx) * v * 0.8;
+  else if (dy && libre(x, y, x, y + Math.sign(dy) * v, 3)) e.y += Math.sign(dy) * v * 0.8;
+  e.pas += dt * vit * 2;
+}
+
+/* ---------- société : maisons, marchés, habitants, caravanes ----------
+   BANC D'ESSAI, pas une feature du jeu : le doc 09 acte « pas de PNJ ». Ces habitants tiennent
+   la place de joueurs pour observer ce qui émerge (chemins, prix, échanges) avant d'avoir des joueurs.
+
+   Une maison loge 2 habitants. Un marché fait un village : les maisons à moins de 350 m s'y rattachent.
+   Chaque habitant choisit à chaque tournée le métier qui rapporte le plus par minute (prix au marché
+   divisé par la durée de l'aller-retour) : chasser les chèvres ou pêcher. Il vend au marché, y mange.
+   Le prix d'un bien baisse quand le stock monte ; la nourriture se gâte, donc il faut toujours en rapporter. Avec deux marchés, un habitant devient marchand
+   quand un bien est bien moins cher chez lui qu'en face, et fait la navette avec une mule. */
+const BIENS = ["gibier", "poisson"];
+const batis = [], marches = [], habitants = [];
+const GABARITS = { maison: { lx: 3.5, ly: 2.5, nom: "maison" }, marche: { lx: 3, ly: 2.5, nom: "marché" } };
+let horlogePerte = 0, budgetChemins = 2, message = "", messageFin = 0, modePose = null, horlogeSociete = 0;
+const hasardM = (a, b) => a + Math.random() * (b - a);
+const prix = (m, bien) => Math.max(2, Math.min(12, Math.round(12 - 0.7 * m.stock[bien])));
+
+const ECHELLE_BATI = 1.15;           // les bâtiments posés sont à peine grossis, comme les personnages (~1,3 fois leur taille réelle)
+function spriteBatiment(type) {      // petit rendu isométrique d'un volume, même projection que le terrain
+  const pasB = PAS / ECHELLE_BATI, zsB = ZS * ECHELLE_BATI;
+  const { lx, ly } = GABARITS[type], ni = Math.round(2 * lx / pasB) + 1, nj = Math.round(2 * ly / pasB) + 1;
+  const hmax = type === "maison" ? 2.6 + ly * 1.0 : 2.5, haut = Math.ceil(hmax * zsB) + 2;
+  const s = sprite(ni + nj, haut + ((ni + nj) >> 1) + 2);
+  const chaume = P.chaume, mur = P.mur, bois = abgr("#4a3828"), boisClair = abgr("#6b5238"), porte = abgr("#2e231a"), toile = [abgr("#a8483a"), abgr("#e6dcc0")];
+  const h = (i, j) => type === "maison" ? 2.6 + (ly - Math.abs(j * pasB - ly)) * 1.0 : 2.5;
+  for (let sx = 0; sx < s.w; sx++) {
+    const k = sx - (nj - 1), iMax = Math.min(ni - 1, nj - 1 + k), iMin = Math.max(0, k); let yMin = s.h, premier = true;
+    for (let i = iMax; i >= iMin; i--) {
+      const j = i - k, yg = haut + ((i + j) >> 1), y = yg - Math.round(h(i, j) * zsB);
+      if (premier) {                           // façade : du bas du toit jusqu'au sol
+        const droite = i === ni - 1, le = (droite ? j : i) * pasB, cote = droite ? 2 * ly : 2 * lx;
+        for (let row = y + 1; row <= yg; row++) {
+          const zr = (yg - row) / zsB; let c = 0;
+          if (type === "maison") {
+            c = mur[droite ? 2 : 3];
+            if (!droite && Math.abs(le - lx) < 0.55 && zr < 1.9) c = porte;
+            else if (zr < 0.4) c = mur[1]; else if (hasard2(sx, row) < 0.06) c = mur[droite ? 1 : 2];
+          } else if (le < 0.3 || le > cote - 0.3) c = bois;                    // poteaux d'angle
+          else if (zr < 0.9) c = hasard2(sx >> 1, row) < 0.2 ? bois : boisClair;   // l'étal
+          if (c) s.px[row * s.w + sx] = c;
+        }
+        yMin = y + 1; premier = false;
+      }
+      if (y >= yMin) continue;
+      for (let row = y; row < yMin; row++) {
+        let c;
+        if (type === "maison") { const versant = j * pasB > ly, t = (versant ? 3 : 2) + (hasard2(sx, row) < 0.12 ? -1 : hasard2(sx + 99, row) > 0.9 ? 1 : 0); c = Math.abs(j * pasB - ly) < 0.2 ? chaume[1] : chaume[t]; }
+        else c = toile[(i * pasB / 0.75 | 0) & 1];
+        s.px[row * s.w + sx] = c;
+      }
+      yMin = y;
+    }
+  }
+  s.ax = nj - 1 + ((ni - 1) >> 1) - ((nj - 1) >> 1); s.bas = s.h - 1 - (haut + (((ni - 1) >> 1) + ((nj - 1) >> 1) >> 1));   // ancrage : centre de l'emprise, au sol
+  return s;
+}
+const SPR_BATI = {};
+function dire(texte) { message = texte; messageFin = performance.now() + 4000; }
+
+function construire(type, x, y) {
+  const { lx, ly, nom } = GABARITS[type]; x = Math.round(x); y = Math.round(y);
+  if (x - lx < 4 || y - ly < 4 || x + lx > NX - 5 || y + ly + 3 > NY - 5) return dire("Trop près du bord de la carte."), false;
+  let mn = 1e9, mx = -1e9;
+  for (let j = Math.floor(y - ly); j <= Math.ceil(y + ly); j++) for (let i = Math.floor(x - lx); i <= Math.ceil(x + lx); i++) {
+    const k = j * NX + i; if (EAU[k]) return dire(`Impossible : il y a de l'eau sous la ${nom}.`), false;
+    if (BLOQ[k]) return dire("Impossible : la place est déjà prise."), false;
+    mn = Math.min(mn, SOL[k]); mx = Math.max(mx, SOL[k]);
+  }
+  if (mx - mn > 2.4) return dire(`Terrain trop pentu ici (${(mx - mn).toFixed(1)} m de dénivelé sous l'emprise, 2,4 m au plus).`), false;
+  const z = solA(x, y), [sx, sy] = ecran(x, y, z), spr = SPR_BATI[type] || (SPR_BATI[type] = spriteBatiment(type));
+  const b = { type, x, y, lx, ly, spr, sx: Math.round(sx), sy: Math.round(sy) + spr.bas, dep: (x + y) / PAS, depT: (x + y + (lx + ly) * ECHELLE_BATI) / PAS, cel: y * NX + x, acces: { x, y: y + ly + 1.6 }, naissances: type === "maison" ? 2 : 0, delai: 2 };
+  for (let j = Math.ceil(y - ly + 0.5); j <= y + ly - 0.5; j++) for (let i = Math.ceil(x - lx + 0.5); i <= x + lx - 0.5; i++) { BLOQ[j * NX + i] = 1; if (type === "maison") VUE[j * NX + i] = z + 4; }
+  batis.push(b); dernierVu = [-99, -99];
+  if (type === "marche") { marches.push({ bati: b, nom: "Village " + (marches.length + 1), stock: { gibier: 0, poisson: 0 }, habitants: [], caravane: null, navettes: 0, rive: undefined }); dire(`${marches[marches.length - 1].nom} fondé : les maisons à moins de 350 m s'y rattachent.`); }
+  else dire("Maison construite : deux habitants vont s'y installer.");
+  return true;
+}
+
+function marcheDe(h) {               // le marché le plus proche de sa maison, à 350 m au plus
+  let best = null, bd = 350;
+  for (const m of marches) { const d = Math.hypot(m.bati.x - h.maison.x, m.bati.y - h.maison.y); if (d < bd) { bd = d; best = m; } }
+  if (h.marche !== best) { if (h.marche) h.marche.habitants = h.marche.habitants.filter(o => o !== h); if (best) best.habitants.push(h); h.marche = best; }
+  return best;
+}
+function riveDe(m) {                 // le bord de l'eau le plus proche du marché (cherché une fois)
+  if (m.rive !== undefined) return m.rive;
+  let best = null, bd = 450;
+  for (let j = 4; j < NY - 4; j += 2) for (let i = 4; i < NX - 4; i += 2) {
+    const k = j * NX + i; if (EAU[k] || BLOQ[k] || DIST_EAU[k] > 2) continue;
+    const d = Math.hypot(i - m.bati.x, j - m.bati.y); if (d < bd) { bd = d; best = { x: i, y: j, d }; }
+  }
+  return m.rive = best;
+}
+function aller(h, x, y, alors, tolerance) { h.dest = { x, y, alors, tolerance: tolerance || 6 }; h.etat = "marche"; h.enRoute = false; }
+function manger(h, m) {
+  const bien = m.stock.gibier >= m.stock.poisson ? "gibier" : "poisson";
+  if (m.stock[bien] < 1) return false;
+  h.or -= prix(m, bien); m.stock[bien]--; h.faim = 0; return true;
+}
+function decider(h) {
+  const m = marcheDe(h);
+  if (!m) { h.metier = "sans"; return aller(h, h.maison.acces.x + hasardM(-12, 12), h.maison.acces.y + hasardM(0, 14), "flane", 30); }
+  if (h.faim > 1.5 && m.stock.gibier + m.stock.poisson > 0) return aller(h, m.bati.acces.x, m.bati.acces.y, "achete", 8);
+  // Marchand : un seul par village, s'il y a assez de monde et un vrai écart de prix avec un autre marché.
+  if (!m.caravane && m.habitants.length >= 3) for (const o of marches) if (o !== m && !(m.coupes && m.coupes.includes(o))) for (const bien of BIENS)
+    if (m.stock[bien] >= 5 && prix(o, bien) - prix(m, bien) >= 3) { m.caravane = h; h.metier = "marchand"; h.traite = { bien, vers: o }; return aller(h, m.bati.acces.x, m.bati.acces.y, "car_charge", 8); }
+  // Sinon le métier qui rapporte le plus par minute de trajet.
+  let proie = null, dp = 1e9;
+  for (const c of chevres) {                // la bête la plus proche du marché qu'aucun autre chasseur ne vise déjà
+    if (c.vise && c.vise !== h && c.vise.proie === c && c.vise.metier === "chasseur") continue;
+    const d = Math.hypot(c.x - m.bati.x, c.y - m.bati.y); if (d < dp) { dp = d; proie = c; }
+  }
+  const rive = riveDe(m);
+  // Un bien au prix plancher (marché saturé) ne vaut pas le déplacement.
+  const gainChasse = proie && prix(m, "gibier") > 2 ? 2 * prix(m, "gibier") / (2 * dp / 3.4 + 25) * hasardM(0.8, 1.2) : 0;
+  const gainPeche = rive && !m.riveInaccessible && prix(m, "poisson") > 2 ? 2 * prix(m, "poisson") / (2 * rive.d / 3.4 + 30) * hasardM(0.8, 1.2) : 0;
+  if (!gainChasse && !gainPeche) { h.metier = "sans"; return aller(h, m.bati.acces.x + hasardM(-10, 10), m.bati.acces.y + hasardM(0, 10), "flane", 30); }
+  if (gainChasse >= gainPeche) { h.metier = "chasseur"; h.proie = proie; proie.vise = h; h.tentatives = 0; aller(h, proie.x, proie.y, "chasse", 14); }
+  else { h.metier = "pêcheur"; aller(h, rive.x + hasardM(-4, 4), rive.y + hasardM(-4, 4), "peche", 9); }
+}
+function vivre(h, dt) {
+  h.faim += dt / 150;                       // un repas toutes les 2 min 30 de jeu
+  if (h.mule) { const d = Math.hypot(h.x - h.mx, h.y - h.my); if (d > 1.7) { h.mx += (h.x - h.mx) * (1 - 1.7 / d); h.my += (h.y - h.my) * (1 - 1.7 / d); h.muleG = (h.x - h.mx) - (h.y - h.my) < 0; h.mulePas += dt * 5; } }
+  if (h.attente > 0) { h.attente -= dt; return; }
+  const m = h.marche;
+  switch (h.etat) {
+    case "repos": h.dedans = false; decider(h); break;
+    case "marche":
+      if (!h.enRoute) { if (budgetChemins <= 0) return; budgetChemins--; partir(h, h.dest.x, h.dest.y); h.enRoute = true; }
+      if (h.but) marcher(h, dt, h.mule ? 2.8 : 3.4, 0, 0);
+      if (!h.but) { h.pas = 0; h.rate = Math.hypot(h.x - h.dest.x, h.y - h.dest.y) > h.dest.tolerance; h.etat = h.dest.alors; }
+      break;
+    case "flane": h.attente = hasardM(3, 8); h.etat = "repos"; break;
+    case "chasse": {
+      const c = h.proie;
+      if (!c || c.mort || ++h.tentatives > 5) { h.etat = "repos"; break; }
+      if (Math.hypot(c.x - h.x, c.y - h.y) > 14) { aller(h, c.x, c.y, "chasse", 14); break; }       // la bête a bougé
+      h.attente = 4; h.etat = "abat"; break;                                                       // à portée d'arc
+    }
+    case "abat": {
+      const c = h.proie; if (c && !c.mort) { c.mort = true; chevres.splice(chevres.indexOf(c), 1); h.charge = { bien: "gibier", n: 2 }; }
+      if (h.charge && m) aller(h, m.bati.acces.x, m.bati.acces.y, "vend", 8); else h.etat = "repos"; break;
+    }
+    case "peche":
+      if (h.rate) { if (m) m.riveInaccessible = true; h.etat = "repos"; break; }
+      h.attente = hasardM(30, 45); h.etat = "prise"; break;
+    case "prise": h.charge = { bien: "poisson", n: 2 }; if (m) aller(h, m.bati.acces.x, m.bati.acces.y, "vend", 8); else h.etat = "repos"; break;
+    case "vend":
+      if (h.rate || !m) { h.attente = 8; h.etat = "repos"; break; }
+      h.or += h.charge.n * prix(m, h.charge.bien); m.stock[h.charge.bien] += h.charge.n; h.charge = null;
+      if (h.faim >= 1) manger(h, m);
+      if (++h.tournees % 3 === 0) aller(h, h.maison.acces.x, h.maison.acces.y, "dort", 8); else { h.attente = 2; h.etat = "repos"; }
+      break;
+    case "achete": if (m && !h.rate) manger(h, m); h.attente = 3; h.etat = "repos"; break;
+    case "dort": h.dedans = !h.rate; h.attente = 14; h.etat = "repos"; break;
+    case "car_charge": {
+      const { bien, vers } = h.traite, n = Math.min(8, m.stock[bien] - 1);
+      if (h.rate || n < 3) { m.caravane = null; h.etat = "repos"; break; }
+      m.stock[bien] -= n; h.or -= n * prix(m, bien); h.charge = { bien, n };
+      h.mule = true; h.mx = h.x - 1.5; h.my = h.y - 1.5; h.mulePas = 0; h.poids = 3;
+      aller(h, vers.bati.acces.x, vers.bati.acces.y, "car_vend", 10); break;
+    }
+    case "car_vend": {
+      const o = h.traite.vers;
+      if (h.rate) (m.coupes = m.coupes || []).push(o);            // pas de passage vers ce village : on n'y retournera pas
+      else {
+        h.or += h.charge.n * prix(o, h.charge.bien); o.stock[h.charge.bien] += h.charge.n; h.charge = null;
+        for (const bien of BIENS) if (!h.charge && o.stock[bien] >= 4 && prix(m, bien) > prix(o, bien)) { const n = Math.min(8, o.stock[bien] - 1); o.stock[bien] -= n; h.or -= n * prix(o, bien); h.charge = { bien, n }; }
+      }
+      h.attente = 4; aller(h, m.bati.acces.x, m.bati.acces.y, "car_retour", 10); break;
+    }
+    case "car_retour":
+      if (h.charge) { h.or += h.charge.n * prix(m, h.charge.bien); m.stock[h.charge.bien] += h.charge.n; h.charge = null; }
+      m.caravane = null; if (!(m.coupes && m.coupes.includes(h.traite.vers))) m.navettes++; h.mule = false; h.poids = 1; h.attente = 3; h.etat = "repos"; break;
+  }
+}
+function societe(dt) {
+  for (const b of batis) if (b.naissances && (b.delai -= dt) <= 0) {
+    b.naissances--; b.delai = 1.5;
+    habitants.push({ x: b.acces.x + hasardM(-1, 1), y: b.acces.y + hasardM(0, 1.5), vue: "face", pas: 0, route: [], but: null, bloque: 0, essais: 0, procheMin: 1e9, poids: 1,
+      maison: b, marche: null, metier: "sans", etat: "repos", attente: hasardM(0.5, 3), charge: null, or: 0, faim: 0, tournees: 0, mule: false, dedans: false });
+  }
+  for (const h of habitants) vivre(h, dt);
+  if ((horlogeSociete += dt) < 2) return;
+  horlogeSociete -= 2;
+  // La nourriture se gâte : chaque marché perd 6 % de ses stocks par minute (rien en dessous de 9 unités).
+  if ((horlogePerte += 2) >= 60) { horlogePerte = 0; for (const m of marches) for (const bien of BIENS) m.stock[bien] -= Math.round(m.stock[bien] * 0.06); }
+  // Les hardes se reconstituent : une bête par harde toutes les 40 s tant qu'elle en compte moins de 8.
+  for (const hd of hardes) {
+    if ((hd.repousse = (hd.repousse || 0) + 2) < 40) continue; hd.repousse = 0;
+    if (chevres.filter(c => c.hx === hd.hx && c.hy === hd.hy).length < 8) chevres.push({ x: hd.hx + hasardM(-4, 4), y: hd.hy + hasardM(-4, 4), hx: hd.hx, hy: hd.hy, bx: hd.hx, by: hd.hy, attente: 1, pas: 0, gauche: false });
+  }
+  // L'usure s'efface lentement (moitié en ~15 min de jeu) et donne le niveau de chemin visible.
+  for (const k of FOULEES) {               // on ne parcourt que les cases déjà foulées, pas toute la carte
+    const u = USURE[k] *= 0.9985; if (u < 0.5 && !TRACE[k]) continue;
+    const v = u + 0.5 * (USURE[k - 1] + USURE[k + 1] + USURE[k - NX] + USURE[k + NX]);
+    TRACE[k] = v >= 30 ? 3 : v >= 12 ? 2 : v >= 4 ? 1 : 0;
+  }
+}
+
+const touches = {};
+function simuler(dt, t) {
+  let dx = 0, dy = 0;       // en repère écran : haut = (-1, -1) dans le monde, droite = (+1, -1)
+  if (touches.KeyW || touches.ArrowUp) { dx -= 1; dy -= 1; }
+  if (touches.KeyS || touches.ArrowDown) { dx += 1; dy += 1; }
+  if (touches.KeyA || touches.ArrowLeft) { dx -= 1; dy += 1; }
+  if (touches.KeyD || touches.ArrowRight) { dx += 1; dy -= 1; }
+  marcher(joueur, dt, touches.ShiftLeft || touches.ShiftRight ? 7.5 : 3.6, dx, dy);
+  for (const c of chevres) {
+    const dj = Math.hypot(c.x - joueur.x, c.y - joueur.y); let vit = 0.9;
+    if (dj < 11) { c.bx = c.x + (c.x - joueur.x) / dj * 9; c.by = c.y + (c.y - joueur.y) / dj * 9; c.attente = 0; vit = 4.2; }
+    else if ((c.attente -= dt) < -6) { c.bx = c.hx + (hasard(t * 1000 + c.x * 31 | 0) - 0.5) * 16; c.by = c.hy + (hasard(t * 977 + c.y * 17 | 0) - 0.5) * 16; c.attente = 2 + hasard(c.x * 13 | 0) * 5; }
+    const ax = c.bx - c.x, ay = c.by - c.y, d = Math.hypot(ax, ay);
+    if (d > 0.3 && c.attente <= 0) {
+      const nx = c.x + ax / d * vit * dt, ny = c.y + ay / d * vit * dt;
+      if (libre(c.x, c.y, nx, ny, 0)) { c.x = nx; c.y = ny; c.pas += dt * 6; c.gauche = ax - ay < 0; } else { c.bx = c.x; c.by = c.y; }
+    }
+  }
+  for (const b of faune) {
+    const esp = ESPECES[b.type], dj = Math.hypot(b.x - joueur.x, b.y - joueur.y); let vit = esp.vit;
+    if (dj < esp.fuite) { b.bx = b.x + (b.x - joueur.x) / dj * 35; b.by = b.y + (b.y - joueur.y) / dj * 35; b.peur = 3.5; b.attente = 0; }
+    if (b.peur > 0) { b.peur -= dt; vit = esp.course; }
+    else if ((b.attente -= dt) < -5) {                    // nouvelle étape : loin, et le domaine se déplace peu à peu
+      if (Math.random() < 0.25) { b.hx = Math.max(20, Math.min(LARG - 20, b.hx + (Math.random() - 0.5) * 90)); b.hy = Math.max(20, Math.min(HAUTEUR - 20, b.hy + (Math.random() - 0.5) * 90)); }
+      b.bx = b.hx + (Math.random() - 0.5) * esp.rayon; b.by = b.hy + (Math.random() - 0.5) * esp.rayon; b.attente = 3 + Math.random() * 7;
+    }
+    const ax = b.bx - b.x, ay = b.by - b.y, d = Math.hypot(ax, ay);
+    if (d > 0.4 && b.attente <= 0) {
+      const nx = b.x + ax / d * vit * dt, ny = b.y + ay / d * vit * dt;
+      if (libre(b.x, b.y, nx, ny, 0)) { b.x = nx; b.y = ny; b.pas += dt * vit * 2.2; b.gauche = ax - ay < 0; } else { b.bx = b.x; b.by = b.y; b.attente = 1; }
+    } else b.pas = 0;
+  }
+  for (const r of rapaces) r.a += dt * 0.22;
+  societe(dt);
+}
+
+/* ---------- brouillard : ligne de vue sur le relief ---------- */
+let CIBLE, VIS, MEMO, brouillard = true, dernierVu = [-99, -99];
+function voir() {
+  const { x: px, y: py } = joueur;
+  if (Math.hypot(px - dernierVu[0], py - dernierVu[1]) < 0.4) return;
+  // On efface autour de l'ancienne ET de la nouvelle position.
+  for (const [ox, oy] of [dernierVu, [px, py]]) {
+    const x0 = Math.max(0, ox - PORTEE - 3 | 0), x1 = Math.min(NX - 1, ox + PORTEE + 3 | 0), y0 = Math.max(0, oy - PORTEE - 3 | 0), y1 = Math.min(NY - 1, oy + PORTEE + 3 | 0);
+    for (let j = y0; j <= y1; j++) CIBLE.fill(0, j * NX + x0, j * NX + x1 + 1);
+  }
+  dernierVu = [px, py];
+  const oeil = solA(px, py) + YEUX, nb = 900;
+  for (let a = 0; a < nb; a++) {
+    const ang = a / nb * 6.28319, dx = Math.cos(ang), dy = Math.sin(ang); let maxT = -1e9, bois = 0;       // bois : mètres de forêt déjà traversés par le regard
+    for (let s = 0.75; s < PORTEE; s += 0.75) {
+      const x = Math.round(px + dx * s), y = Math.round(py + dy * s);
+      if (x < 0 || y < 0 || x >= NX || y >= NY) break;
+      const k = y * NX + x, tg = (VUE[k] - oeil) / s;
+      // on voit une case si un objet de 1,2 m posé dessus dépasse la ligne de vue
+      // Les troncs et les branches basses bouchent la vue : nette sur 16 m de forêt, nulle au-delà de 32 m.
+      if (COUVERT) { const c = COUVERT[k]; bois += c >= 40 ? 0.75 : c >= 15 ? 0.3 : 0; if (bois > 32) break; }
+      if (tg + CIBLE_H / s >= maxT) { let f = (PORTEE - s) / 14; if (bois > 16) f = Math.min(f, (32 - bois) / 16); const val = f >= 1 ? 255 : f * 255 | 0; if (val > CIBLE[k]) CIBLE[k] = val; if (val > 40) MEMO[k] = 1; }
+      if (tg > maxT) maxT = tg;
+    }
+  }
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) { const k = Math.round(py + j) * NX + Math.round(px + i); CIBLE[k] = 255; MEMO[k] = 1; }
+}
+function fondre(dt) {
+  const f = Math.min(1, dt * 7), px = joueur.x, py = joueur.y, m = PORTEE + 14;
+  const x0 = Math.max(0, px - m | 0), x1 = Math.min(NX - 1, px + m | 0), y0 = Math.max(0, py - m | 0), y1 = Math.min(NY - 1, py + m | 0);
+  for (let j = y0; j <= y1; j++) for (let k = j * NX + x0; k <= j * NX + x1; k++) VIS[k] += (CIBLE[k] - VIS[k]) * f;
+}
+
+/* ---------- trame ---------- */
+const toile = document.getElementById("ecran"), ctx = toile.getContext("2d");
+let zoom = 3, LW = 0, LH = 0, image, fb, zb, vb, vent = true;      // vent : touche V      // zb : profondeur du terrain en chaque pixel de l'écran
+function tailler() {
+  const dpr = window.devicePixelRatio || 1;
+  LW = Math.ceil(window.innerWidth * dpr / zoom); LH = Math.ceil(window.innerHeight * dpr / zoom);
+  toile.width = LW; toile.height = LH; toile.style.width = LW * zoom / dpr + "px"; toile.style.height = LH * zoom / dpr + "px"; image = ctx.createImageData(LW, LH); fb = new Uint32Array(image.data.buffer); zb = new Uint16Array(LW * LH); vb = new Uint8Array(LW * LH);      // vb : 1 là où l'écran montre du feuillage
+}
+function terne(c) { const g = ((c & 255) * 3 + (c >> 8 & 255) * 5 + (c >> 16 & 255) * 2) / 10; return (0xff000000 | ((g * 0.42 + 8) << 16) | ((g * 0.34 + 5) << 8) | (g * 0.30 + 4)) >>> 0; }
+
+function couleurEau(cel, tx, ty, t) {
+  tx >>= 1; ty >>= 1;                    // rides et reflets en grains de 2 px, à l'échelle du reste
+  const prof = PROF_EAU[cel]; let q = prof <= 1 ? 4 : prof <= 3 ? 3 : prof <= 7 ? 2 : 1;
+  const sombre = OMB[cel] === 2; if (sombre) q -= 1;
+  const ligne = ty >> 1, glisse = tx + (t * 9 | 0) + ligne * 7;
+  const a = hasard2(glisse >> 3, ligne);                       // tirets clairs qui dérivent
+  if (a > 0.84) q += 1; else if (hasard2((tx - (t * 4 | 0) + ligne * 5) >> 4, ligne + 999) > 0.8) q -= 1;
+  if (prof <= 1 && hasard2(cel, t * 2.5 | 0) > 0.55) return ECUME;                          // écume de berge
+  if (!sombre && a > 0.84 && hasard2(tx * 7 + ty, t * 6 | 0) > 0.93) return ECLAT;        // éclats de soleil
+  return P.eau[q < 0 ? 0 : q > 5 ? 5 : q];
+}
+
+function poser(s, bx, by, dep, camX, camY, mode, vent) {       // mode : 0 plein, 1 terne (souvenir), 2 ajouré (cache le joueur)
+  const x0 = bx - s.ax - camX, y0 = by - s.h + 1 - camY;
+  if (x0 >= LW || y0 >= LH || x0 + s.w < 0 || y0 + s.h < 0) return;
+  for (let v = 0; v < s.h; v++) {
+    const Y = y0 + v; if (Y < 0 || Y >= LH) continue;
+    const dec = vent && v < s.haut ? vent : 0;
+    for (let u = 0; u < s.w; u++) {
+      const c = s.px[v * s.w + u]; if (!c) continue;
+      const X = x0 + u + dec; if (X < 0 || X >= LW) continue;
+      if (mode === 2 && ((X + Y) & 1)) continue;
+      if (zb[Y * LW + X] > dep + 5 && !(vb[Y * LW + X] && ((X + Y) & 1))) continue;   // caché par le terrain ; à travers le feuillage on le devine en pointillé
+      fb[Y * LW + X] = mode === 1 ? terne(c) : c;
+    }
+  }
+}
+
+const MARQUE = depuisMotif(["..www..", ".w...w.", "..www.."], { w: abgr("#f0e6c0") });
+let camX0 = 0, camY0 = 0;
+function dessiner(t) {
+  const zj = solA(joueur.x, joueur.y), [jx, jy] = ecran(joueur.x, joueur.y, zj);
+  const camX = Math.round(jx - LW / 2), camY = Math.round(jy - LH / 2 - 12); camX0 = camX; camY0 = camY;
+  const photo = satellite ? ORTHO : null;
+  const depJ = (joueur.x + joueur.y) / PAS, jxC = Math.round(jx), jyC = Math.round(jy) - 11;
+  horlogeTuiles++; tuilesVisibles = (((camX + LW - 1) >> 8) - (camX >> 8) + 3) * (((camY + LH - 1) >> 8) - (camY >> 8) + 3);
+  for (let tyy = camY >> 8; tyy <= (camY + LH - 1) >> 8; tyy++) for (let txx = camX >> 8; txx <= (camX + LW - 1) >> 8; txx++) {
+    const xa = Math.max(camX, txx * T), xb = Math.min(camX + LW, txx * T + T), ya = Math.max(camY, tyy * T), yb = Math.min(camY + LH, tyy * T + T);
+    const tu = tyy < 0 || txx < 0 || txx * T >= W || tyy * T >= HT ? null : tuile(txx, tyy);
+    if (tu) {        // le vent : chaque arbre oscille à son rythme, et des rafales traversent le paysage ; entre deux rafales, rien ne bouge
+      const L = tu.lot, dc = tu.decal.length === L.length ? tu.decal : (tu.decal = new Int8Array(L.length)); let actif = false;
+      if (vent && !photo) for (let n = 0; n < L.length; n++) {
+        const a = L[n], rafale = Math.sin(t * 0.45 - (a.sx + a.sy * 2) * 0.0035);
+        const d = rafale > 0.35 ? Math.round(Math.sin(t * 1.7 + a.cel * 0.37) * (0.45 + rafale * 0.75)) : 0;
+        dc[n] = d; if (d) actif = true;
+      } else dc.fill(0);
+      dc.actif = actif;
+    }
+    for (let ty = ya; ty < yb; ty++) {
+      const o = (ty - camY) * LW - camX, r = (ty - tyy * T) * T - txx * T;
+      if (!tu) { fb.fill(VIDE, o + xa, o + xb); zb.fill(0, o + xa, o + xb); continue; }
+      const TER = tu.TER, CEL = tu.CEL, MATP = tu.MATP, DEP = tu.DEP, TERV = tu.TERV, IDV = tu.IDV, HV = tu.HV, lot = tu.lot;
+      const dyJ = (ty - jyC) / 115, dy2 = dyJ * dyJ, x0t = txx * T, decal = tu.decal;
+      for (let tx = xa; tx < xb; tx++) {
+        const q = r + tx, e = o + tx, cel = CEL[q];
+        if (!photo) {
+          // Végétation. Chaque arbre a son propre décalage du moment (-1, 0 ou +1 px) pour toute sa couronne : on cherche
+          // donc, parmi le pixel et ses deux voisins, celui dont l'arbre se trouve justement décalé jusqu'ici.
+          let qv = -1; const i0 = IDV[q], lx = tx - x0t;
+          if (i0 && (HV[q] <= lot[i0 - 1].spr.tronc || decal[i0 - 1] === 0 || lx === 0 || lx === T - 1)) qv = q;      // au bord d'un morceau, pas de décalage
+          if (decal.actif) {
+            let dep0 = qv < 0 ? -1 : lot[i0 - 1].dep;
+            if (lx > 0) { const i1 = IDV[q - 1]; if (i1 && decal[i1 - 1] === 1 && HV[q - 1] > lot[i1 - 1].spr.tronc && lot[i1 - 1].dep > dep0) { qv = q - 1; dep0 = lot[i1 - 1].dep; } }
+            if (lx < T - 1) { const i2 = IDV[q + 1]; if (i2 && decal[i2 - 1] === -1 && HV[q + 1] > lot[i2 - 1].spr.tronc && lot[i2 - 1].dep > dep0) qv = q + 1; }
+          }
+          const id = qv < 0 ? 0 : IDV[qv];
+          if (id) {
+            const ar = lot[id - 1]; let montre = true;
+            // Autour du personnage, le feuillage des arbres qui sont devant lui s'estompe en trame, de plus en plus plein
+            // à mesure qu'on s'éloigne : on voit les fûts monter et la voûte se refermer plus loin.
+            if (HV[qv] > ar.spr.coupe && ar.dep > depJ - 20) { const dxJ = (tx - jxC) / 150, d2 = dxJ * dxJ + dy2; if (d2 < 1 && (d2 - 0.12) / 0.88 < BAYER[(ty & 3) * 4 + (tx & 3)]) montre = false; }
+            if (montre) {
+              let vuV = true; const celV = ar.cel;
+              if (brouillard) { const v = VIS[celV]; if (v < 241) vuV = v >= 14 + BAYER[(ty & 3) * 4 + (tx & 3)] * 226; }
+              if (vuV || MEMO[celV]) { fb[e] = vuV ? TERV[qv] : terne(TERV[qv]); zb[e] = ar.dep; vb[e] = 1; continue; }
+            }
+          }
+        }
+        if (cel === 0xffffffff) { fb[e] = VIDE; zb[e] = 0; vb[e] = 0; continue; }
+        const m = MATP[q]; zb[e] = DEP[q]; vb[e] = 0;
+        let vu = true;
+        if (brouillard) {                                      // le tramage du bord de vue ne se calcule que là où il sert
+          const v = VIS[cel];
+          if (v < 241) { vu = v >= 14 + BAYER[(ty & 3) * 4 + (tx & 3)] * 226; if (!vu && !MEMO[cel]) { fb[e] = VIDE; continue; } }
+        }
+        let c = TER[q];
+        if (photo) c = photo[cel];
+        else if (m === 2) { if (vu) c = couleurEau(cel, tx, ty, t); }
+        else if (m === 1) {
+          const tr = TRACE[cel];
+          if (tr && (tr === 3 || BAYER[(ty & 3) * 4 + (tx & 3)] < tr * 0.36)) {          // chemin tracé par les passages : terre battue, de plus en plus pleine
+            const g = ((c & 255) * 3 + (c >> 8 & 255) * 5 + (c >> 16 & 255) * 2) / 10, n = (g - 40) / 30 | 0;
+            c = P.chemin[n < 0 ? 0 : n > 4 ? 4 : n];
+          }
+        }
+        fb[e] = vu ? c : terne(c);
+      }
+    }
+  }
+  // S'il reste du budget, une image sur quatre, on dessine d'avance un morceau de la couronne autour de l'écran.
+  if (budgetTuiles > 0 && budgetTuiles < 100 && horlogeTuiles % 4 === 0) avance: for (let tyy = (camY >> 8) - 1; tyy <= ((camY + LH - 1) >> 8) + 1; tyy++) for (let txx = (camX >> 8) - 1; txx <= ((camX + LW - 1) >> 8) + 1; txx++)
+    if (txx >= 0 && tyy >= 0 && txx * T < W && tyy * T < HT && !tuiles.has(tyy * 4096 + txx)) { tuile(txx, tyy); break avance; }
+  // Sprites, du plus lointain au plus proche.
+  const liste = [], pj = PERSO[joueur.vue][joueur.pas ? 1 + (joueur.pas | 0) % 2 : 0];
+  for (const c of chevres) {
+    const cel = Math.round(c.y) * NX + Math.round(c.x); if (brouillard && VIS[cel] < 100) continue;
+    const [sx, sy] = ecran(c.x, c.y, solA(c.x, c.y));
+    liste.push({ s: (c.gauche ? CHEVRE_G : CHEVRE)[(c.pas | 0) % 2], x: Math.round(sx), y: Math.round(sy), dep: (c.x + c.y) / PAS, mode: 0, vent: 0 });
+  }
+  for (const b of faune) {
+    const cel = Math.round(b.y) * NX + Math.round(b.x); if (brouillard && VIS[cel] < 100) continue;
+    const [sx, sy] = ecran(b.x, b.y, solA(b.x, b.y)); if (sx < camX - 30 || sx > camX + LW + 30 || sy < camY - 10 || sy > camY + LH + 30) continue;
+    liste.push({ s: SPR_FAUNE[b.type][b.gauche ? "g" : "d"][(b.pas | 0) % 2], x: Math.round(sx), y: Math.round(sy), dep: (b.x + b.y) / PAS, mode: 0, vent: 0 });
+  }
+  liste.push({ s: pj, x: Math.round(jx), y: Math.round(jy), dep: depJ, mode: 0, vent: 0 });
+  const but = joueur.but;
+  if (but && (t * 3 | 0) % 2) { const [bx, by] = ecran(but.x, but.y, solA(but.x, but.y)); liste.push({ s: MARQUE, x: Math.round(bx), y: Math.round(by) + 1, dep: (but.x + but.y) / PAS - 1, mode: 0, vent: 0 }); }
+  for (const b of batis) {
+    const vu = !brouillard || VIS[b.cel] > 100; if (!vu && !MEMO[b.cel]) continue;
+    liste.push({ s: b.spr, x: b.sx, y: b.sy, dep: b.dep, depT: b.depT, mode: vu ? 0 : 1, vent: 0 });
+  }
+  for (const h of habitants) {
+    if (h.dedans) continue;
+    const cel = Math.round(h.y) * NX + Math.round(h.x); if (brouillard && VIS[cel] < 100) continue;
+    const [sx, sy] = ecran(h.x, h.y, solA(h.x, h.y)), dep = (h.x + h.y) / PAS, X = Math.round(sx), Y = Math.round(sy);
+    liste.push({ s: HABITS[h.metier][h.vue][h.pas ? 1 + (h.pas | 0) % 2 : 0], x: X, y: Y, dep, mode: 0, vent: 0 });
+    if (h.charge) liste.push({ s: BALLOT[h.charge.bien], x: X, y: Y - 23, dep: dep + 0.5, mode: 0, vent: 0 });
+    if (h.mule) { const [mx, my] = ecran(h.mx, h.my, solA(h.mx, h.my)); liste.push({ s: (h.muleG ? MULE_G : MULE)[(h.mulePas | 0) % 2], x: Math.round(mx), y: Math.round(my), dep: (h.mx + h.my) / PAS, mode: 0, vent: 0 }); }
+  }
+  liste.sort((a, b) => a.dep - b.dep);
+  for (const e of liste) poser(e.s, e.x, e.y, e.depT || e.dep, camX, camY, e.mode, e.vent);
+  for (const r of rapaces) {
+    const [sx, sy] = ecran(r.cx + Math.cos(r.a) * r.r, r.cy + Math.sin(r.a) * r.r, r.alt);
+    poser(RAPACE[(t * 1.5 + r.r | 0) % 2], Math.round(sx), Math.round(sy), 65535, camX, camY, 0, 0);
+  }
+  if (!photo) feuillesMortes(t, camX, camY);
+}
+// Feuilles qui tombent : elles naissent sur du feuillage visible, descendent en se balançant, puis disparaissent.
+const feuillesVol = [], COUL_FEUILLES = pal(["#b0a862", "#928c4a", "#a17e3b", "#7a8845"]); let tFeuilles = 0;
+function feuillesMortes(t, camX, camY) {
+  const dt = Math.min(0.1, Math.max(0, t - tFeuilles)); tFeuilles = t;
+  if (dt > 0) for (let n = 0; n < 2 && feuillesVol.length < 90; n++) {
+    const x = Math.random() * LW | 0, y = Math.random() * LH | 0;
+    if (vb[y * LW + x]) feuillesVol.push({ x: camX + x, y: camY + y, vy: 14 + Math.random() * 14, ph: Math.random() * 6.28, vie: 2.5 + Math.random() * 2.5, c: COUL_FEUILLES[Math.random() * 4 | 0] });
+  }
+  for (let n = feuillesVol.length - 1; n >= 0; n--) {
+    const f = feuillesVol[n]; f.vie -= dt; if (f.vie <= 0) { feuillesVol.splice(n, 1); continue; }
+    f.y += f.vy * dt; f.x += (Math.sin(t * 3 + f.ph) * 10 + 6) * dt;
+    const X = Math.round(f.x) - camX, Y = Math.round(f.y) - camY;
+    if (X >= 0 && X < LW - 1 && Y >= 0 && Y < LH) { fb[Y * LW + X] = f.c; fb[Y * LW + X + 1] = f.c; }
+  }
+}
+
+/* ---------- démarrage ---------- */
+let avant = 0, compteur = 0, cumul = 0, vitesse = 1, pause = false, tJeu = 0;
+function avancer(dtReel) {       // fait avancer le monde de dtReel x vitesse, par petits pas pour garder les mêmes règles
+  let reste = pause ? 0 : dtReel * vitesse; budgetChemins = 2;       // au plus deux calculs de trajet d'habitant par image
+  while (reste > 1e-6) { const pas = Math.min(0.05, reste); tJeu += pas; simuler(pas, tJeu); reste -= pas; }
+}
+function horloge() { const s = tJeu | 0, d2 = n => String(n).padStart(2, "0"); return `temps de jeu ${d2(s / 3600 | 0)}:${d2((s / 60 | 0) % 60)}:${d2(s % 60)} · ${pause ? "en pause" : "×" + vitesse}`; }
+function panneau() {
+  const l = ["H : poser une maison · M : poser un marché · Échap : annuler"];
+  if (modePose) l.push(`→ Clique sur le terrain pour poser ${modePose === "maison" ? "la maison" : "le marché"}.`);
+  if (message && performance.now() < messageFin) l.push("→ " + message);
+  for (const m of marches) {
+    const metiers = {}; for (const h of m.habitants) metiers[h.metier] = (metiers[h.metier] || 0) + 1;
+    l.push("", `${m.nom} — ${m.habitants.length} habitants (${Object.entries(metiers).map(([k, v]) => v + " " + k).join(", ") || "personne"})`,
+      `  gibier ${m.stock.gibier} à ${prix(m, "gibier")} po · poisson ${m.stock.poisson} à ${prix(m, "poisson")} po`,
+      `  caravane : ${m.caravane ? "en route" : "aucune"} · ${m.navettes} navette${m.navettes > 1 ? "s" : ""} faite${m.navettes > 1 ? "s" : ""}`);
+  }
+  const seuls = habitants.filter(h => !h.marche).length;
+  if (seuls) l.push("", `${seuls} habitant${seuls > 1 ? "s" : ""} sans marché à moins de 350 m.`);
+  return l.join("\n");
+}
+function boucle(ms) {
+  const t = ms / 1000, dt = Math.min(0.05, t - avant || 0.016); avant = t;
+  budgetTuiles = 1;        // au plus un morceau de terrain dessiné par image (~60 ms) : les autres arrivent aux images suivantes
+  avancer(dt); voir(); fondre(dt * (pause ? 1 : vitesse)); dessiner(tJeu); ctx.putImageData(image, 0, 0);
+  document.getElementById("horloge").textContent = horloge();
+  if (compteur % 10 === 0) document.getElementById("panneau").textContent = panneau();
+  cumul += dt; if (++compteur === 30) { document.getElementById("ips").textContent = Math.round(30 / cumul) + " images/s"; compteur = 0; cumul = 0; }
+  requestAnimationFrame(boucle);
+}
+function demarrer() {
+  const etapes = [["Nivellement du relief…", preparerRelief], ["Plantation des arbres…", planterArbres],
+    ["Réveil des chèvres…", () => { peupler(); CIBLE = new Uint8Array(NN); VIS = new Float32Array(NN); MEMO = new Uint8Array(NN); tailler(); }],
+    ["Dessin du terrain autour de toi…", () => { voir(); dessiner(0); }]];
+  let n = 0;
+  (function suite() {
+    if (n === etapes.length) { document.getElementById("charge").remove(); requestAnimationFrame(boucle); return; }
+    document.getElementById("etape").textContent = etapes[n][0];
+    setTimeout(() => { etapes[n++][1](); suite(); }, 30);
+  })();
+}
+addEventListener("keydown", e => {
+  touches[e.code] = true;
+  if (e.code === "KeyB") brouillard = !brouillard;
+  const rang = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5"].indexOf(e.code), pave = ["Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5"].indexOf(e.code);
+  if (rang >= 0 || pave >= 0) { vitesse = 1 << Math.max(rang, pave); pause = false; }
+  if (e.code === "Space") { pause = !pause; e.preventDefault(); }
+  const lettre = (e.key || "").toLowerCase();
+  if (lettre === "v") vent = !vent;
+  if (lettre === "o") { satellite = !satellite; if (satellite) chargerOrtho(); }
+  if (lettre === "h") modePose = "maison"; else if (lettre === "m") modePose = "marche"; else if (e.code === "Escape") modePose = null;
+  if (e.code.startsWith("Arrow")) e.preventDefault();
+});
+addEventListener("keyup", e => { touches[e.code] = false; });
+addEventListener("blur", () => { for (const k in touches) touches[k] = false; });
+addEventListener("resize", () => { if (fb) tailler(); });
+addEventListener("wheel", e => {
+  let z = Math.max(1, Math.min(6, zoom + (e.deltaY < 0 ? 1 : -1)));
+  const dpr = window.devicePixelRatio || 1;        // on refuse un dézoom qui ferait plus de ~2,3 millions de pixels à recalculer par image
+  while (z < 6 && (window.innerWidth * dpr / z) * (window.innerHeight * dpr / z) > 2.3e6) z++;
+  zoom = z; if (fb) tailler();
+}, { passive: true });
+toile.addEventListener("pointerdown", e => {       // clic : on lit dans l'image du terrain quelle case est sous le curseur
+  if (!fb || e.button !== 0) return;
+  const r = toile.getBoundingClientRect(), x = Math.floor((e.clientX - r.left) * LW / r.width), y = Math.floor((e.clientY - r.top) * LH / r.height);
+  const cel = caseSous(camX0 + x, camY0 + y); if (cel < 0) return;
+  if (modePose) { if (construire(modePose, cel % NX, cel / NX | 0)) modePose = null; }
+  else allerVers(cel % NX, cel / NX | 0);
+});
+demarrer();
+</script>
+</body>
+</html>

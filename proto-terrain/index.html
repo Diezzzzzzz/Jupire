@@ -1,0 +1,1123 @@
+<meta charset="utf-8">
+<title>Jupire — Balazuc jouable</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin:0; overflow:hidden; background:#0b0d09;
+         font:13px/1.5 ui-sans-serif,system-ui,sans-serif; color:#e8e4d8; }
+  canvas { display:block; }
+  #ui { position:fixed; top:12px; left:12px; width:236px; padding:11px 13px;
+        background:#161a12ee; border:1px solid #343a2c; border-radius:8px; }
+  h1 { font-size:12px; margin:0 0 1px; letter-spacing:.06em;
+       text-transform:uppercase; color:#c8b98a; }
+  .sub { font-size:11px; color:#7f7d70; margin-bottom:9px; }
+  label { display:block; margin:8px 0 1px; font-size:11px; color:#a8a494; }
+  input[type=range] { width:100%; accent-color:#c8b98a; }
+  .val { float:right; color:#c8b98a; font-variant-numeric:tabular-nums; }
+  #stats { margin-top:9px; padding-top:8px; border-top:1px solid #343a2c;
+           font-size:11px; color:#7f7d70; white-space:pre-line; }
+  kbd { background:#282d21; border:1px solid #434936; border-radius:3px;
+        padding:0 4px; font:11px ui-monospace,monospace; color:#c8b98a; }
+  #load { position:fixed; inset:0; display:grid; place-items:center;
+          background:#0b0d09; font-size:14px; color:#7f7d70; z-index:9; }
+  #aide { position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
+          padding:7px 14px; background:#161a12dd; border:1px solid #343a2c;
+          border-radius:20px; font-size:12px; color:#a8a494; }
+</style>
+
+<div id="load">chargement du monde…</div>
+<div id="ui" hidden>
+  <h1>Balazuc</h1>
+  <div class="sub" id="mode">MNT LiDAR HD · <b style="color:#c8b98a">mode libre</b></div>
+  <div style="font-size:10px;color:#5f6356;margin:-6px 0 8px">build v12 · eau simple (sans shader)</div>
+
+  <label>Lissage du terrain <span class="val" id="vl">3 m</span></label>
+  <input type="range" id="lisse" min="0" max="12" step="1" value="3">
+
+  <label>Aplatissement <span class="val" id="vk">0.85</span></label>
+  <input type="range" id="k" min="0.4" max="1" step="0.05" value="0.85">
+
+  <label>Creusement des gorges <span class="val" id="vg">×1.6</span></label>
+  <input type="range" id="gain" min="1" max="3" step="0.1" value="1.6">
+
+  <label>Niveau de l'eau <span class="val" id="ve">+0.5 m</span>
+    <span style="color:#6b6a5e">écart au niveau détecté</span></label>
+  <input type="range" id="eau" min="-3" max="12" step="0.5" value="0.5">
+
+  <label>Filtrer les ruisseaux <span class="val" id="vr">aucun</span>
+    <span style="color:#6b6a5e">0 = tout le réseau BD TOPO</span></label>
+  <input type="range" id="ruiss" min="0" max="20" step="1" value="0">
+
+  <label>Inclinaison caméra <span class="val" id="vi">26.6°</span>
+    <span style="color:#6b6a5e" id="vex">pentes ×2.0</span></label>
+  <input type="range" id="incl" min="15" max="70" step="1" value="27">
+
+  <label>Densité des sprites <span class="val" id="vd">55 %</span></label>
+  <input type="range" id="dens" min="5" max="100" step="5" value="55">
+
+  <label>Netteté jusqu'à <span class="val" id="vp">180 m</span>
+    <span style="color:#6b6a5e">au-delà : vu, mais imprécis</span></label>
+  <input type="range" id="portee" min="40" max="600" step="20" value="180">
+
+  <label>Visible jusqu'à <span class="val" id="vv">2000 m</span>
+    <span style="color:#6b6a5e">la brume ferme l'horizon</span></label>
+  <input type="range" id="visib" min="300" max="6000" step="100" value="2000">
+
+  <label>Monde</label>
+  <select id="monde" style="width:100%;background:#20241a;color:#e8e4d8;
+    border:1px solid #434936;border-radius:4px;padding:3px"></select>
+
+  <div id="stats"></div>
+</div>
+<div id="aide" hidden></div>
+<div id="reel" hidden style="position:fixed;top:12px;right:12px;padding:6px 12px;
+  background:#c8b98add;color:#161a12;border-radius:5px;font-size:12px;font-weight:600">
+  ORTHOPHOTO IGN — le vrai lieu</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+const SOL = {
+  eau:            [0x3d5b56, 0x33504b],
+  rocher:         [0x9c9070, 0x746b53],
+  ripisylve:      [0x4a5c34, 0x3e4f2c],
+  chene_vert:     [0x5c6338, 0x4e5530],
+  chene_pubescent:[0x6b7040, 0x5c6338],
+  garrigue:       [0x9a9464, 0x86804f],
+  pelouse:        [0xa39a63, 0x8e8654],
+};
+const ARBRE = {
+  chene_vert:      [ 9, 0x3f5124, 0x2b3818, 'boule'],
+  chene_pubescent:[11, 0x5c6b2e, 0x404a20, 'boule'],
+  erable:          [10, 0x6d7430, 0x4b5122, 'boule'],
+  aulne:           [13, 0x4e6b34, 0x364a24, 'haut'],
+  frene:           [14, 0x5f7a38, 0x425427, 'haut'],
+  saule:           [11, 0x74853f, 0x505c2c, 'saule'],
+  pin:             [16, 0x36502f, 0x243620, 'pin'],
+  genevrier:       [ 4, 0x3a4a2e, 0x27321f, 'pin'],
+  buis:            [2.2, 0x2f3d22, 0x1f2917, 'boule'],
+  bloc:            [2.6, 0xb9ad8d, 0x6f6851, 'roche'],
+};
+
+// ───────────────────────────────────── sprites (ombrage cuit, doc 03)
+function faireSprite(essence, variante) {
+  const [, feuille, ombre, forme] = ARBRE[essence];
+  const S = 128, c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  let seed = (essence.length * 977 + variante * 7919 + 13) >>> 0;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const hex = n => '#' + n.toString(16).padStart(6, '0');
+  const fin = () => { const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace; t.magFilter = THREE.LinearFilter; return t; };
+
+  g.fillStyle = 'rgba(16,22,12,.38)';
+  g.beginPath(); g.ellipse(S*.52, S*.93, S*.26, S*.065, 0, 0, 7); g.fill();
+  const blob = (x, y, r, col) => { g.fillStyle = col; g.beginPath(); g.arc(x,y,r,0,7); g.fill(); };
+
+  if (forme === 'roche') {
+    const cx = S*.5, cy = S*.72, R = S*.30, nf = 5 + (variante % 3), pts = [];
+    for (let f = 0; f < nf; f++) {
+      const a = f/nf*6.283 + rnd()*.4, d = R*(.65 + rnd()*.45);
+      pts.push([cx + Math.cos(a)*d, cy - Math.abs(Math.sin(a))*d*1.15 + R*.25]);
+    }
+    g.fillStyle = hex(ombre); g.beginPath();
+    pts.forEach((p,n) => n ? g.lineTo(p[0],p[1]) : g.moveTo(p[0],p[1]));
+    g.closePath(); g.fill();
+    g.fillStyle = hex(feuille); g.beginPath(); g.moveTo(cx, cy - R*.95);
+    for (const p of pts.slice(0, Math.ceil(nf/2))) g.lineTo(p[0]*.82+cx*.18, p[1]*.82+cy*.18);
+    g.closePath(); g.fill();
+    return fin();
+  }
+
+  g.strokeStyle = '#3a2e1e'; g.lineCap = 'round';
+  g.lineWidth = S * (forme === 'pin' ? .035 : .045);
+  g.beginPath(); g.moveTo(S*.5, S*.92); g.lineTo(S*.5 + (rnd()-.5)*S*.05, S*.62); g.stroke();
+
+  if (forme === 'pin') {
+    for (let e = 0; e < 4; e++) {
+      const t = e/3, y = S*(.66 - t*.42), wd = S*(.30 - t*.17);
+      g.fillStyle = hex(e < 2 ? ombre : feuille);
+      g.beginPath(); g.moveTo(S*.5, y - S*.14);
+      g.lineTo(S*.5 - wd, y + S*.05); g.lineTo(S*.5 + wd, y + S*.05);
+      g.closePath(); g.fill();
+    }
+    blob(S*.44, S*.30, S*.10, hex(feuille));
+  } else {
+    const cy = forme === 'haut' ? S*.42 : S*.47;
+    const R  = forme === 'haut' ? S*.27 : S*.32;
+    for (const [col, dx, dy, kk] of [[ombre,0,0,1],[feuille,-.05,-.06,.86]])
+      for (let b = 0; b < 11; b++) {
+        const a = rnd()*6.3, d = rnd()**.6 * R*.72;
+        blob(S*.5 + dx*S + Math.cos(a)*d,
+             cy + dy*S + Math.sin(a)*d*(forme==='haut'?1.25:.8),
+             R*(.34 + rnd()*.22)*kk, hex(col));
+      }
+    if (forme === 'saule') {
+      g.strokeStyle = hex(feuille); g.lineWidth = S*.012;
+      for (let i = 0; i < 7; i++) { const x = S*.5 + (rnd()-.5)*R*1.5;
+        g.beginPath(); g.moveTo(x, cy + R*.4); g.lineTo(x + (rnd()-.5)*S*.04, cy + R*1.15); g.stroke(); }
+    }
+  }
+  return fin();
+}
+
+// ───────────────────────────────────── scène
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d09);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const DIST = 3000;
+// Inclinaison de la caméra. atan(0.5) = 26,57° = le 2:1 d'AoE2.
+// ATTENTION — effet non évident : en projection orthographique inclinée de θ, une pente
+// réelle α apparaît à l'écran comme tan(α') = tan(α)/tan(θ). À 26,57°, tan(θ) = 0,5 :
+// **toutes les pentes sont perçues deux fois plus fortes qu'elles ne sont.**
+// Ce n'est pas un bug, c'est la vue isométrique elle-même — AoE2 fait pareil.
+let INCL = Math.atan(0.5);
+const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, -5000, 9000);
+let portee = 190, azimut = Math.PI/4;
+const cible = new THREE.Vector3();
+function placerCamera() {
+  const a = innerWidth / innerHeight;
+  cam.left = -portee*a/2; cam.right = portee*a/2;
+  cam.top = portee/2; cam.bottom = -portee/2;
+  cam.position.set(cible.x + Math.sin(azimut)*Math.cos(INCL)*DIST,
+                   cible.y + Math.sin(INCL)*DIST,
+                   cible.z + Math.cos(azimut)*Math.cos(INCL)*DIST);
+  cam.lookAt(cible); cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+}
+
+// ───────────────────────────────────── monde
+// cache-buster : sinon le navigateur ressert l'ancien monde après un nouveau semis
+const T0 = performance.now();
+// Deux mondes, deux usages — c'est le streaming par tuiles du doc 35 en tout petit :
+// on ne peut pas avoir la finesse ET l'étendue, donc on charge celui dont on a besoin.
+const MONDES = [
+  ['world_2400.json',   'Balazuc 2,4 km · 1,17 m  ⭐'],   // la config qui marchait
+  ['world_1200.json',   'Balazuc 1,2 km · 1,17 m'],
+  ['world_large4m.json','Balazuc→Vinezac · 4 m'],
+  ['world.json',        'Balazuc→Vinezac · 2,2 m · lourd'],
+];
+const choisi = new URLSearchParams(location.search).get('m') || MONDES[0][0];
+const W = await (await fetch(`data/${choisi}?t=${T0}`)).json();
+const T_CHARGE = Math.round(performance.now() - T0);
+const { w, h, step_m: step, z: Zbrut, classes, noms, arbres } = W;
+const LX = (w - 1) * step, LZ = (h - 1) * step;   // la zone n'est pas forcément carrée
+const el = id => document.getElementById(id);
+
+function flou(src, sigma) {
+  if (sigma <= 0) return Float32Array.from(src);
+  const s = sigma / step, r = Math.max(1, Math.round(s * 2.5));
+  const noy = []; for (let i = -r; i <= r; i++) noy.push(Math.exp(-(i*i)/(2*s*s)));
+  const som = noy.reduce((a,b) => a+b, 0);
+  const t = new Float32Array(w*h), o = new Float32Array(w*h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) { let v = 0;
+    for (let k = -r; k <= r; k++) v += src[j*w + Math.min(w-1, Math.max(0, i+k))] * noy[k+r];
+    t[j*w+i] = v/som; }
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) { let v = 0;
+    for (let k = -r; k <= r; k++) v += t[Math.min(h-1, Math.max(0, j+k))*w + i] * noy[k+r];
+    o[j*w+i] = v/som; }
+  return o;
+}
+
+// La basse fréquence est basse fréquence PAR DÉFINITION : la calculer à 1,17 m coûterait
+// 2 milliards d'opérations pour rien (doc 31). On décime, on floute, on ré-interpole.
+function flouLarge(src, sigma) {
+  const f = Math.max(1, Math.round(sigma / (step * 12)));   // facteur de décimation
+  if (f === 1) return flou(src, sigma);
+  const dw = Math.ceil(w/f), dh = Math.ceil(h/f);
+  const petit = new Float32Array(dw*dh);
+  for (let j = 0; j < dh; j++) for (let i = 0; i < dw; i++) {
+    let s = 0, n = 0;
+    for (let b = 0; b < f; b++) for (let a = 0; a < f; a++) {
+      const jj = j*f+b, ii = i*f+a;
+      if (jj < h && ii < w) { s += src[jj*w+ii]; n++; }
+    }
+    petit[j*dw+i] = s/n;
+  }
+  // flou sur la grille décimée (pas = step*f)
+  const s2 = sigma/(step*f), r = Math.max(1, Math.round(s2*2.5));
+  const noy = []; for (let i = -r; i <= r; i++) noy.push(Math.exp(-(i*i)/(2*s2*s2)));
+  const som = noy.reduce((a,b) => a+b, 0);
+  const t = new Float32Array(dw*dh), o = new Float32Array(dw*dh);
+  for (let j = 0; j < dh; j++) for (let i = 0; i < dw; i++) { let v = 0;
+    for (let k = -r; k <= r; k++) v += petit[j*dw + Math.min(dw-1, Math.max(0, i+k))]*noy[k+r];
+    t[j*dw+i] = v/som; }
+  for (let j = 0; j < dh; j++) for (let i = 0; i < dw; i++) { let v = 0;
+    for (let k = -r; k <= r; k++) v += t[Math.min(dh-1, Math.max(0, j+k))*dw + i]*noy[k+r];
+    o[j*dw+i] = v/som; }
+  // ré-interpolation bilinéaire
+  const out = new Float32Array(w*h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const fy = Math.min(j/f, dh-1.001), fx = Math.min(i/f, dw-1.001);
+    const jj = fy|0, ii = fx|0, v = fy-jj, u = fx-ii;
+    out[j*w+i] = (o[jj*dw+ii]*(1-u) + o[jj*dw+ii+1]*u)*(1-v)
+               + (o[(jj+1)*dw+ii]*(1-u) + o[(jj+1)*dw+ii+1]*u)*v;
+  }
+  return out;
+}
+
+// Débruitage BILATÉRAL, pas gaussien. Un flou moyenne tous les voisins : il enlève le
+// grain de mesure, mais il arrondit aussi le sommet et le pied des falaises — c'est-à-dire
+// précisément ce qui fait qu'une falaise est une falaise. Le bilatéral pondère aussi par
+// l'écart d'altitude : un voisin 20 m plus bas (de l'autre côté de l'arête) ne compte pas.
+// Résultat : le bruit part, les ruptures restent franches.
+function bilateral(src, sigmaS, sigmaR = 1.6) {
+  if (sigmaS <= 0) return Float32Array.from(src);
+  const s = sigmaS / step, R = Math.max(1, Math.min(4, Math.round(s * 1.8)));
+  const gs = [];
+  for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++)
+    gs.push(Math.exp(-(di*di + dj*dj) / (2*s*s)));
+  const inv2r2 = 1 / (2 * sigmaR * sigmaR);
+  const out = new Float32Array(w*h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const z0 = src[j*w+i];
+    let som = 0, pds = 0, n = 0;
+    for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++, n++) {
+      const jj = j+dj, ii = i+di;
+      if (jj < 0 || jj >= h || ii < 0 || ii >= w) continue;
+      const v = src[jj*w+ii], d = v - z0;
+      const p = gs[n] * Math.exp(-d*d * inv2r2);
+      som += v * p; pds += p;
+    }
+    out[j*w+i] = som / pds;
+  }
+  return out;
+}
+
+// Z0 = relief débruité (le LiDAR à 1 m porte du grain de mesure), bf = grandes formes
+let Z0 = bilateral(Zbrut, 3), bf = flouLarge(Z0, 250), RAIDE = null;
+let ZDOUX = flou(Z0, 7);      // version très adoucie, utilisée sur les berges
+const Zc = new Float32Array(w*h);
+
+function calcRaide() {
+  const R = Math.max(1, Math.round(8/step));      // la pente se juge sur ~8 m, pas 1 px
+  const p = new Float32Array(w*h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const i0 = Math.max(i-R,0), i1 = Math.min(i+R,w-1);
+    const j0 = Math.max(j-R,0), j1 = Math.min(j+R,h-1);
+    const dx = (Z0[j*w+i1]-Z0[j*w+i0])/((i1-i0)*step);
+    const dz = (Z0[j1*w+i]-Z0[j0*w+i])/((j1-j0)*step);
+    // transition franche : sous 30° rien, au-delà de 42° plein gain. Un seuil large
+    // donnerait un dégradé mou — or on veut une rupture, pas une courbe.
+    p[j*w+i] = Math.min(Math.max((Math.atan(Math.hypot(dx,dz))*57.2958 - 30)/12, 0), 1);
+  }
+  // On ne creuse JAMAIS un cours d'eau ni ses berges : une surface d'eau est plate,
+  // et le gain, qui vise les creux raides, mordait exactement le pied de berge — d'où
+  // des crevasses le long de la rivière. On annule la raideur sur le masque, dilaté.
+  if (MASQUE) {
+    const R = Math.max(2, Math.round(6/step));
+    const bloque = new Uint8Array(w*h);
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+      if (!MASQUE[j*w+i]) continue;
+      for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+        const jj = j+dj, ii = i+di;
+        if (jj>=0 && jj<h && ii>=0 && ii<w) bloque[jj*w+ii] = 1;
+      }
+    }
+    for (let i = 0; i < w*h; i++) if (bloque[i]) p[i] = 0;
+  }
+  RAIDE = flou(p, 2.5);          // juste de quoi éviter le bruit, pas de quoi arrondir
+}
+
+// z' = k·(grandes formes) + gain·(détail).  Le gain ne s'applique qu'aux CREUX :
+// amplifier aussi les bosses ferait dépasser les crêtes au-dessus du plateau.
+// Le LiDAR est bruité sur la COUTURE eau/terre : le laser y donne des retours
+// erratiques, et l'IGN y raccorde sa surface d'eau reconstruite au sol réel. Résultat :
+// des dents de scie le long des berges — les « crevasses ». On adoucit cette bande-là,
+// et elle seule. C'est le « raccord terre-mer » annoncé au doc 29.
+let BERGE = null;                       // 0 ailleurs, 1 sur la couture
+function calcBerge() {
+  if (!MASQUE) { BERGE = null; return; }
+  const R = Math.max(2, Math.round(5/step));
+  const b = new Float32Array(w*h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    if (!MASQUE[j*w+i]) continue;
+    for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+      const jj = j+dj, ii = i+di;
+      if (jj>=0 && jj<h && ii>=0 && ii<w) b[jj*w+ii] = 1;
+    }
+  }
+  BERGE = flou(b, 4);                   // transition douce, pas de marche
+}
+
+function appliquer(k, gain) {
+  for (let i = 0; i < w*h; i++) {
+    const hf = Z0[i] - bf[i];
+    // Creux : plein gain (on creuse le pied). Bosses : demi-gain, et seulement là où
+    // c'est déjà raide — ça redresse l'ARÊTE du sommet sans faire pousser de pics sur
+    // le plateau (RAIDE y vaut 0). Sans ça, la falaise s'approfondit mais son bord
+    // reste arrondi, et on « glisse sur une courbe ».
+    const g = 1 + (gain - 1) * RAIDE[i] * (hf < 0 ? 1 : 0.5);
+    Zc[i] = k * bf[i] + g * hf;
+    // sur la couture eau/terre, on glisse vers le relief très lissé : les dents de
+    // scie du LiDAR y disparaissent sans toucher au reste du terrain
+    if (BERGE && BERGE[i] > 0.01) {
+      const t = Math.min(BERGE[i], 1) * 0.85;
+      Zc[i] = Zc[i] * (1 - t) + (k * bf[i] + (ZDOUX[i] - bf[i])) * t;
+    }
+  }
+}
+
+// ───────────────────────────────────── terrain
+const geo = new THREE.PlaneGeometry(LX, LZ, w-1, h-1);
+geo.rotateX(-Math.PI/2);
+const col = new Float32Array(w*h*3);
+geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+const SOL_AZ = 2.35, SOL_EL = 0.42;
+const LUM = [Math.cos(SOL_EL)*Math.sin(SOL_AZ), Math.sin(SOL_EL), Math.cos(SOL_EL)*Math.cos(SOL_AZ)];
+let SVF = null, OMB = null;
+
+// L'occlusion et les ombres sont BASSE FRÉQUENCE par nature : les calculer à pleine
+// résolution est du gâchis. On les calcule sur une grille décimée puis on interpole —
+// gain ×9, différence invisible. C'est ce qui permet d'agrandir la zone.
+const DEC = 3;
+const dw = Math.ceil(w/DEC), dh = Math.ceil(h/DEC), dstep = step*DEC;
+const Zd = new Float32Array(dw*dh);
+function decimer() {
+  for (let j = 0; j < dh; j++) for (let i = 0; i < dw; i++)
+    Zd[j*dw+i] = Zc[Math.min(h-1, j*DEC)*w + Math.min(w-1, i*DEC)];
+}
+function interpoler(src) {                       // grille décimée → pleine résolution
+  const out = new Float32Array(w*h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const fy = Math.min(j/DEC, dh-1.001), fx = Math.min(i/DEC, dw-1.001);
+    const jj = fy|0, ii = fx|0, v = fy-jj, u = fx-ii;
+    out[j*w+i] = (src[jj*dw+ii]*(1-u) + src[jj*dw+ii+1]*u)*(1-v)
+               + (src[(jj+1)*dw+ii]*(1-u) + src[(jj+1)*dw+ii+1]*u)*v;
+  }
+  return out;
+}
+
+function skyView(dirs = 8, port = 30) {
+  const svf = new Float32Array(dw*dh), rs = [];
+  for (let r = 1; r < port; r = Math.max(r+1, Math.round(r*1.35))) rs.push(r);
+  for (let j = 0; j < dh; j++) for (let i = 0; i < dw; i++) {
+    const k = j*dw+i, z0 = Zd[k]; let s = 0;
+    for (let d = 0; d < dirs; d++) {
+      const a = d/dirs*6.28318, cx = Math.cos(a), cy = Math.sin(a); let tm = 0;
+      for (const r of rs) { const ii = (i+cx*r)|0, jj = (j+cy*r)|0;
+        if (ii<0||ii>=dw||jj<0||jj>=dh) break;
+        const t = (Zd[jj*dw+ii]-z0)/(r*dstep); if (t > tm) tm = t; }
+      s += 1 - Math.sin(Math.atan(tm));
+    }
+    svf[k] = s/dirs;
+  }
+  return interpoler(svf);
+}
+function ombres(port = 50) {
+  const om = new Float32Array(dw*dh);
+  const di = Math.sin(SOL_AZ), dj = Math.cos(SOL_AZ), te = Math.tan(SOL_EL);
+  for (let j = 0; j < dh; j++) for (let i = 0; i < dw; i++) {
+    const k = j*dw+i, z0 = Zd[k]; let b = 0;
+    for (let r = 1; r < port; r = Math.max(r+1, Math.round(r*1.25))) {
+      const ii = (i+di*r)|0, jj = (j+dj*r)|0;
+      if (ii<0||ii>=dw||jj<0||jj>=dh) break;
+      const d = (Zd[jj*dw+ii]-z0) - r*dstep*te; if (d > b) b = d;
+    }
+    om[k] = 1 - Math.min(b/5, 1);
+  }
+  return interpoler(om);
+}
+
+const cTmp = new THREE.Color(), CIEL = new THREE.Color(0x8fa6b8);
+function colorier(avecAO = true) {
+  if (avecAO || !SVF) { decimer(); SVF = skyView(); OMB = ombres(); }
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const k = j*w+i, cl = classes[k], p = SOL[noms[cl]] || SOL.pelouse;
+    const i0 = Math.max(i-1,0), i1 = Math.min(i+1,w-1);
+    const j0 = Math.max(j-1,0), j1 = Math.min(j+1,h-1);
+    const dx = (Zc[j*w+i1]-Zc[j*w+i0])/((i1-i0)*step);
+    const dz = (Zc[j1*w+i]-Zc[j0*w+i])/((j1-j0)*step);
+    const n = Math.hypot(dx, dz, 1);
+    const direct = Math.max((-dx*LUM[0] + LUM[1] - dz*LUM[2])/n, 0) * OMB[k];
+    const ciel = SVF[k];
+    let l = 0.11 + 0.36*ciel*ciel + 0.90*direct*(0.24 + 0.76*ciel);
+    l = Math.min(l * (cl === 1 ? 0.84 + ((i*13+j*7)%19)/70 : 0.96 + ((i*7+j*13)%11)/130), 1.05);
+    // damier par blocs de 4 cellules : à 1 cellule il alterne à la fréquence de
+    // Nyquist et produit du moiré sur les pentes vues de biais
+    cTmp.setHex(p[(((i >> 2) + (j >> 2)) % 2)]);
+    const froid = (1 - ciel) * 0.3;
+    col[k*3]   = cTmp.r*l*(1-froid) + CIEL.r*froid*l;
+    col[k*3+1] = cTmp.g*l*(1-froid) + CIEL.g*froid*l;
+    col[k*3+2] = cTmp.b*l*(1-froid) + CIEL.b*froid*l;
+  }
+  geo.attributes.color.needsUpdate = true;
+}
+
+// ── fog en ligne de vue (doc 06) : une texture 3 états plaquée sur le monde
+const fogData = new Uint8Array(w*h);          // 0 inexploré · 1..254 brume · 255 vu
+const fogTex = new THREE.DataTexture(fogData, w, h, THREE.RedFormat);
+fogTex.minFilter = fogTex.magFilter = THREE.LinearFilter;   // bords de fog adoucis
+fogTex.needsUpdate = true;
+const INJECTION = {
+  pars: `uniform sampler2D uFog; uniform vec2 uLarg; uniform bool uFogOn;
+         varying vec3 vWPos;`,
+  frag: `if (uFogOn) {
+           vec2 uv = vec2(vWPos.x / uLarg.x, vWPos.z / uLarg.y);
+           float f = texture2D(uFog, uv).r;
+           vec3 c = gl_FragColor.rgb;
+           vec3 brume = vec3(0.42, 0.48, 0.52);          // l'air, pas le vide
+           if (f >= 0.502) {
+             // VU : la netteté décroît avec la distance — on distingue la forme,
+             // pas ce qu'il y a dessus. « Voir beaucoup mais pas précisément » (doc 00).
+             float net = (f - 0.502) / 0.498;
+             float gris = dot(c, vec3(.34,.46,.20));
+             c = mix(vec3(gris), c, 0.35 + 0.65*net);     // les couleurs se délavent
+             c = mix(brume, c, 0.22 + 0.78*net);          // l'air s'épaissit
+           } else if (f > 0.004) {
+             // SOUVENIR : on se rappelle le terrain, pas ce qui s'y passe maintenant
+             float gris = dot(c, vec3(.34,.46,.20));
+             c = mix(vec3(gris), vec3(0.26,0.30,0.33), 0.5) * 0.85;
+           } else {
+             c = vec3(0.035, 0.042, 0.036);               // jamais vu : l'inconnu
+           }
+           gl_FragColor.rgb = c;
+         }`
+};
+let fogActif = true;      // les shaders se compilent au 1er rendu : on mémorise l'état
+function brancherFog(mat) {
+  mat.onBeforeCompile = s => {
+    s.uniforms.uFog = { value: fogTex };
+    s.uniforms.uLarg = { value: new THREE.Vector2(LX, LZ) };
+    s.uniforms.uFogOn = { value: fogActif };
+    mat.userData.u = s.uniforms;
+    // attention : pour un InstancedMesh il FAUT passer par instanceMatrix, sinon
+    // tous les sprites lisent le fog au même endroit (et sortent noirs).
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        #ifdef USE_INSTANCING
+          vWPos = (modelMatrix * instanceMatrix * vec4(position, 1.0)).xyz;
+        #else
+          vWPos = (modelMatrix * vec4(position, 1.0)).xyz;
+        #endif`);
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + INJECTION.pars)
+      .replace('#include <dithering_fragment>', INJECTION.frag + '\n#include <dithering_fragment>');
+  };
+  return mat;
+}
+
+// Orthophoto IGN de la MÊME emprise : le seul moyen honnête de vérifier que le terrain
+// et les réglages correspondent au vrai lieu. Touche O.
+const BASE = 'data/' + choisi.replace(/\.json$/, '');   // calques propres à CE monde
+const ortho = new THREE.TextureLoader().load(BASE + '.ortho.jpg');
+ortho.colorSpace = THREE.SRGBColorSpace;
+ortho.wrapS = ortho.wrapT = THREE.ClampToEdgeWrapping;
+
+const matSol = brancherFog(new THREE.MeshBasicMaterial({ vertexColors: true }));
+const sol = new THREE.Mesh(geo, matSol);
+sol.frustumCulled = false;
+sol.position.set(LX/2, 0, LZ/2);
+scene.add(sol);
+
+function majTerrain() {
+  const pos = geo.attributes.position.array;
+  for (let i = 0; i < w*h; i++) pos[i*3+1] = Zc[i];
+  geo.attributes.position.needsUpdate = true;
+  geo.computeBoundingSphere();
+}
+function altitude(x, zz) {
+  const fx = Math.min(Math.max(x/step, 0), w-1.001);
+  const fy = Math.min(Math.max(zz/step, 0), h-1.001);
+  const i = fx|0, j = fy|0, u = fx-i, v = fy-j;
+  return (Zc[j*w+i]*(1-u) + Zc[j*w+i+1]*u)*(1-v)
+       + (Zc[(j+1)*w+i]*(1-u) + Zc[(j+1)*w+i+1]*u)*v;
+}
+
+// ── l'eau : DÉTECTÉE, pas ajoutée.
+// Le laser du LiDAR ne traverse pas l'eau : l'IGN reconstruit la SURFACE de la rivière
+// comme un plan (doc 35). Le lit n'est donc pas creusé — la nappe est déjà dans le MNT,
+// sous la forme d'une large zone anormalement plate et basse. Il suffit de la trouver.
+// Mesuré sur Balazuc : 4 552 cellules à moins de 0,7° entre 126 et 130 m, soit dix fois
+// plus que n'importe quelle autre tranche d'altitude. C'est l'Ardèche.
+// Une rivière DESCEND et SERPENTE. Un plan horizontal laisse l'amont à sec ; un plan
+// incliné marche sur un tronçon droit mais noie tout dès qu'il y a un méandre (vérifié
+// sur 2,4 km : l'Ardèche fait une grande boucle, le plan la déborde).
+// Donc : on détecte les cellules d'eau, on les rastérise sur une grille grossière, et
+// on propage leur altitude aux nœuds voisins. La nappe suit le cours, quelle que soit
+// sa forme, et reste très en dessous du sol partout ailleurs (donc invisible).
+let filtreRuiss = 0;      // 0 = aucun filtre : on garde tout le tracé
+const MAILLE_EAU = 8;                      // m : la maille doit être plus fine que le lit
+const NEX = Math.max(16, Math.round(LX / MAILLE_EAU) + 1);
+const NEZ = Math.max(16, Math.round(LZ / MAILLE_EAU) + 1);
+
+// LE TRACÉ RÉEL. Deviner la rivière à partir du relief ne marche pas : le test
+// « plat et bas » attrape aussi les terrasses alluviales, les gravières, les plages
+// de galets et les champs de fond de vallée. D'où les débordements et les fausses crues.
+// La BD TOPO hydrographie de l'IGN donne le vrai réseau, servi par le même WMS sur la
+// même emprise — donc aligné au pixel près sur notre grille.
+let MASQUE = null;                       // Uint8Array w×h : 1 = cours d'eau
+async function chargerHydro() {
+  const img = new Image();
+  await new Promise((ok, ko) => { img.onload = ok; img.onerror = ko;
+    img.src = BASE + '.hydro.png'; });
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(img, 0, 0);
+  const px = g.getImageData(0, 0, c.width, c.height).data;
+  const m = new Uint8Array(w*h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const si = Math.min(c.width-1,  (i/(w-1)*(c.width-1))|0);
+    const sj = Math.min(c.height-1, (j/(h-1)*(c.height-1))|0);
+    if (px[(sj*c.width + si)*4 + 3] > 24) m[j*w+i] = 1;    // pixel dessiné = eau
+  }
+  MASQUE = m;
+}
+
+function detecterEau() {
+  const HORS = -9999;
+  const niv = new Float32Array(NEX*NEZ).fill(HORS);
+  let compte = 0, zsom = 0;
+  if (!MASQUE) return { niv, HORS, n: 0, moy: 0 };
+  const nb = new Float32Array(NEX*NEZ), pente = new Float32Array(NEX*NEZ);
+  const mini = new Float32Array(NEX*NEZ).fill(Infinity);
+  for (let j = 1; j < h-1; j++) for (let i = 1; i < w-1; i++) {
+    if (!MASQUE[j*w+i]) continue;
+    const k = j*w+i;
+    const gi = Math.min(NEX-1, (i/(w-1)*(NEX-1))|0), gj = Math.min(NEZ-1, (j/(h-1)*(NEZ-1))|0);
+    const g = gj*NEX+gi;
+    const dx = (Zc[k+1]-Zc[k-1])/(2*step), dy = (Zc[k+w]-Zc[k-w])/(2*step);
+    pente[g] += Math.hypot(dx, dy);
+    nb[g]++;
+    if (Zc[k] < mini[g]) mini[g] = Zc[k];
+    compte++; zsom += Zc[k];
+  }
+  // La BD TOPO dessine un trait de LARGEUR CONSTANTE : un fossé d'1 m est tracé aussi
+  // large que l'Ardèche. Sans filtre, les ruisseaux ressortent en rubans absurdes.
+  // Or une vraie surface d'eau est plate : on écarte les mailles où le terrain sous le
+  // tracé descend franchement — c'est un ruisseau de versant, pas une nappe.
+  const PENTE_MAX = filtreRuiss > 0 ? Math.tan(filtreRuiss * Math.PI/180) : Infinity;
+  for (let k = 0; k < NEX*NEZ; k++) {
+    if (nb[k] === 0) continue;
+    if (pente[k]/nb[k] > PENTE_MAX) continue;      // trop pentu → ruisseau, on passe
+    // niveau = le point le plus bas du tracé dans la maille (le lit), pas la moyenne :
+    // le trait déborde un peu sur les berges, qui sont plus hautes.
+    niv[k] = mini[k];
+  }
+  // lissage le long du cours : on ne comble QUE les mailles voisines d'eau connue,
+  // une seule fois. Aucune propagation aveugle — c'est elle qui noyait les plaines.
+  // FERMETURE : une maille éliminée mais cernée d'eau est un trou, pas une berge.
+  // Le filtre de pente sacrifie les mailles à cheval sur le bord du masque (la berge
+  // fait grimper leur pente moyenne) — et elles perforent le lit. On les récupère.
+  for (let passe = 0; passe < 2; passe++) {
+    const av = Float32Array.from(niv);
+    for (let j = 1; j < NEZ-1; j++) for (let i = 1; i < NEX-1; i++) {
+      if (av[j*NEX+i] !== HORS) continue;
+      let s = 0, n = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const v = av[(j+dj)*NEX + i+di];
+        if (v !== HORS) { s += v; n++; }
+      }
+      if (n >= 5) niv[j*NEX+i] = s/n;      // cerné → c'était un trou
+    }
+  }
+
+  const cp = Float32Array.from(niv);
+  for (let j = 0; j < NEZ; j++) for (let i = 0; i < NEX; i++) {
+    const z0 = cp[j*NEX+i];
+    if (z0 === HORS) continue;
+    let s = 0, n = 0;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const jj = j+dj, ii = i+di;
+      if (jj<0||jj>=NEZ||ii<0||ii>=NEX) continue;
+      const v = cp[jj*NEX+ii];
+      // ne moyenner qu'entre voisins de niveau proche : sinon un bief 10 m plus haut
+      // contamine celui d'à côté et l'eau part en vrille
+      if (v !== HORS && Math.abs(v - z0) < 2.5) { s += v; n++; }
+    }
+    niv[j*NEX+i] = s/n;
+  }
+  return { niv, HORS, n: compte, moy: compte ? zsom/compte : 0 };
+}
+
+// Géométrie construite à la demande : SEULS les quads réellement mouillés existent.
+// Un plan continu « glissé sous le terrain » ne marche pas — entre deux sommets, la
+// nappe interpole en ligne droite alors qu'une falaise est convexe : elle ressort au
+// milieu de la paroi. Ne rien dessiner là où il n'y a pas d'eau est la seule façon sûre.
+const eauGeo = new THREE.BufferGeometry();
+// Eau : shader dédié. Le courant suit la pente réelle du lit (calculée depuis le
+// niveau détecté), la couleur vient de la PROFONDEUR (on devine le fond sur les
+// hauts-fonds), l'écume naît là où c'est peu profond et là où le courant force.
+// Eau : matériau STANDARD, pas de shader custom. Un ShaderMaterial GLSL peut échouer
+// silencieusement selon le pilote (ANGLE sous Windows/WSL) — l'eau disparaît alors sans
+// aucune erreur. Tant qu'on n'a pas vérifié sur la machine cible, on reste sur du sûr.
+const matEau = brancherFog(new THREE.MeshBasicMaterial({
+  color: 0x3f7d84, transparent: true, opacity: 0.88 }));
+const eau = new THREE.Mesh(eauGeo, matEau);
+eau.position.set(0, 0, 0);   // positions déjà en coordonnées monde
+eau.renderOrder = 1;
+eau.frustumCulled = false;   // near négatif ⇒ frustum faux ⇒ culling à tort
+scene.add(eau);
+let planEau = null, rochersEau = [];
+function majEau(offset) {
+  if (!planEau) return;
+  const { niv, HORS } = planEau;
+  const P = [], I = [], PROF = [], FLOW = [];
+  const idx = new Int32Array(NEX*NEZ).fill(-1);
+  const mx = LX/(NEX-1), mz = LZ/(NEZ-1);
+  for (let j = 0; j < NEZ; j++) for (let i = 0; i < NEX; i++) {
+    const v = niv[j*NEX+i];
+    if (v === HORS) continue;
+    const x = i*mx, z = j*mz;
+    idx[j*NEX+i] = P.length/3;
+    P.push(x, v + offset, z);
+    PROF.push(Math.max(0, v + offset - altitude(x, z)));
+    // le courant descend la pente de la NAPPE : gradient du niveau, pas du terrain
+    const g = (a, b) => (a !== HORS && b !== HORS) ? (a - b) : 0;
+    let dx = g(niv[j*NEX + Math.min(i+1, NEX-1)], niv[j*NEX + Math.max(i-1, 0)]) / (2*mx);
+    let dz = g(niv[Math.min(j+1, NEZ-1)*NEX + i], niv[Math.max(j-1, 0)*NEX + i]) / (2*mz);
+    FLOW.push(-dx, -dz);                       // vers l'aval
+  }
+  for (let j = 0; j < NEZ-1; j++) for (let i = 0; i < NEX-1; i++) {
+    const a = idx[j*NEX+i], b = idx[j*NEX+i+1];
+    const c = idx[(j+1)*NEX+i], d = idx[(j+1)*NEX+i+1];
+    if (a < 0 || b < 0 || c < 0 || d < 0) continue;   // quad incomplet → pas d'eau
+    I.push(a, c, b, b, c, d);
+  }
+  eauGeo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  eauGeo.setAttribute('aProf', new THREE.Float32BufferAttribute(PROF, 1));
+  eauGeo.setAttribute('aFlow', new THREE.Float32BufferAttribute(FLOW, 2));
+  eauGeo.setIndex(I);
+  eauGeo.computeBoundingSphere();
+
+  // rochers émergents : là où l'eau est basse. Graine fixe → toujours les mêmes.
+  rochersEau = [];
+  let sd = 20260727;
+  const rnd = () => ((sd = (sd*1664525 + 1013904223) >>> 0) / 4294967296);
+  for (let j = 1; j < NEZ-1; j++) for (let i = 1; i < NEX-1; i++) {
+    const v = niv[j*NEX+i];
+    if (v === HORS) continue;
+    for (let n = 0; n < 3; n++) {
+      const x = (i + rnd() - 0.5) * mx, z = (j + rnd() - 0.5) * mz;
+      const prof = v + offset - altitude(x, z);
+      // il faut de l'eau, mais peu : c'est là que la roche perce
+      if (prof < 0.03 || prof > 0.45 || rnd() > 0.22) continue;
+      rochersEau.push([x, z, altitude(x, z), 0.5 + rnd()*0.9]);
+    }
+  }
+  majRochers();
+}
+
+// ── arbres
+const quad = new THREE.PlaneGeometry(1, 1);
+quad.translate(0, 0.5, 0);
+const parEssence = {};
+// rang stable dans [0,1) par sprite : sert au filtrage de densité
+for (let n = 0; n < arbres.length; n++) {
+  const a = arbres[n];
+  a[6] = ((a[0]*7919 + a[1]*104729) % 1000) / 1000;
+  (parEssence[a[3]] ||= []).push(a);
+}
+const groupes = [];
+for (const [essence, liste] of Object.entries(parEssence)) {
+  const [haut] = ARBRE[essence];
+  for (let v = 0; v < 4; v++) {
+    const sous = liste.filter(a => a[5] === v);
+    if (!sous.length) continue;
+    const im = new THREE.InstancedMesh(quad, brancherFog(new THREE.MeshBasicMaterial({
+      map: faireSprite(essence, v), transparent: true, alphaTest: 0.42,
+      side: THREE.DoubleSide })), sous.length);
+    im.frustumCulled = false;
+    groupes.push({ im, sous, haut }); scene.add(im);
+  }
+}
+// ── rochers du lit : les mêmes sprites de bloc, mais posés dans l'eau
+const rochGeo = new THREE.PlaneGeometry(1, 1); rochGeo.translate(0, 0.5, 0);
+const rochMat = brancherFog(new THREE.MeshBasicMaterial({
+  map: faireSprite('bloc', 1), transparent: true, alphaTest: 0.42,
+  side: THREE.DoubleSide }));
+const rochers = new THREE.InstancedMesh(rochGeo, rochMat, 6000);
+rochers.frustumCulled = false; rochers.count = 0; rochers.renderOrder = 2;
+scene.add(rochers);
+
+const M = new THREE.Matrix4(), Q = new THREE.Quaternion();
+const Pv = new THREE.Vector3(), Sv = new THREE.Vector3(), AXE = new THREE.Vector3(0,1,0);
+function majRochers() {
+  const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), azimut);
+  const m = new THREE.Matrix4(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+  let n = 0;
+  for (const [x, z, y, t] of rochersEau) {
+    if (n >= rochers.instanceMatrix.count) break;
+    const H = 0.55 * t;                       // 0,3 à 0,8 m : des galets, pas des menhirs
+    p.set(x, y - 0.12, z); sc.set(H*1.25, H, 1);
+    m.compose(p, q, sc); rochers.setMatrixAt(n++, m);
+  }
+  rochers.count = n;
+  rochers.instanceMatrix.needsUpdate = true;
+}
+
+let densite = 0.55;
+function majArbres() {
+  Q.setFromAxisAngle(AXE, azimut);
+  let total = 0;
+  for (const { im, sous, haut } of groupes) {
+    let n = 0;
+    for (const a of sous) {
+      // tri déterministe : le même sprite disparaît toujours au même seuil,
+      // donc baisser puis remonter le curseur redonne exactement la même forêt
+      if (a[6] >= densite) continue;
+      const H = haut * a[4];
+      Pv.set(a[0], altitude(a[0], a[1]), a[1]);
+      Sv.set(H*0.85, H, 1);
+      M.compose(Pv, Q, Sv); im.setMatrixAt(n++, M);
+    }
+    im.count = n; total += n;
+    im.instanceMatrix.needsUpdate = true;
+  }
+  return total;
+}
+
+// ───────────────────────────────────── la vie
+// Doc 09 : l'IA est légitime pour le vivant NON HUMAIN. Ici, juste assez de mouvement
+// pour que le monde ne soit pas figé — pas de comportement, du vivant d'ambiance.
+function spriteOiseau() {
+  const S = 64, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.strokeStyle = '#2a2a24'; g.lineWidth = 3.4; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(S*.14, S*.46); g.quadraticCurveTo(S*.34, S*.30, S*.5, S*.5);
+  g.quadraticCurveTo(S*.66, S*.30, S*.86, S*.46); g.stroke();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function spriteBete() {
+  const S = 64, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(16,22,12,.34)';
+  g.beginPath(); g.ellipse(S*.5, S*.93, S*.22, S*.05, 0, 0, 7); g.fill();
+  g.strokeStyle = '#5a4630'; g.lineWidth = 3; g.lineCap = 'round';
+  for (const x of [.36, .44, .58, .66]) { g.beginPath();
+    g.moveTo(S*x, S*.62); g.lineTo(S*(x+.02), S*.9); g.stroke(); }
+  g.fillStyle = '#7a5f3e';
+  g.beginPath(); g.ellipse(S*.5, S*.56, S*.20, S*.11, 0, 0, 7); g.fill();
+  g.beginPath(); g.ellipse(S*.70, S*.40, S*.075, S*.06, 0, 0, 7); g.fill();
+  g.strokeStyle = '#7a5f3e'; g.lineWidth = 3.2;
+  g.beginPath(); g.moveTo(S*.63, S*.50); g.lineTo(S*.70, S*.42); g.stroke();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const quadV = new THREE.PlaneGeometry(1, 1); quadV.translate(0, 0.5, 0);
+function troupe(tex, n, taille) {
+  const m = brancherFog(new THREE.MeshBasicMaterial({ map: tex, transparent: true,
+    alphaTest: 0.35, side: THREE.DoubleSide }));
+  const im = new THREE.InstancedMesh(quadV, m, n);
+  im.frustumCulled = false; im.userData.taille = taille;
+  scene.add(im); return im;
+}
+const OISEAUX = troupe(spriteOiseau(), 26, 2.2);
+const BETES   = troupe(spriteBete(),   34, 1.5);
+const vies = [];
+{
+  let sd = 424242;
+  const rnd = () => ((sd = (sd*1664525 + 1013904223) >>> 0) / 4294967296);
+  for (let n = 0; n < 26; n++)                       // rapaces : cercles au-dessus du relief
+    vies.push({ t: 'o', cx: rnd()*LX, cz: rnd()*LZ, r: 30 + rnd()*70,
+                a: rnd()*6.28, v: 0.10 + rnd()*0.14, h: 26 + rnd()*38 });
+  for (let n = 0; n < 34; n++)                       // bêtes : errance lente au sol
+    vies.push({ t: 'b', x: rnd()*LX, z: rnd()*LZ, a: rnd()*6.28,
+                v: 0.5 + rnd()*0.7, chg: rnd()*6 });
+}
+const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _s = new THREE.Vector3();
+function animerVie(dt) {
+  const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), azimut);
+  let io = 0, ib = 0;
+  for (const v of vies) {
+    if (v.t === 'o') {
+      v.a += v.v * dt;
+      const x = v.cx + Math.cos(v.a)*v.r, z = v.cz + Math.sin(v.a)*v.r;
+      _p.set(x, altitude(x, z) + v.h, z);
+      _s.set(OISEAUX.userData.taille, OISEAUX.userData.taille*0.5, 1);
+      _m.compose(_p, q, _s); OISEAUX.setMatrixAt(io++, _m);
+    } else {
+      v.chg -= dt;
+      if (v.chg <= 0) { v.a += (Math.random()-0.5)*2.2; v.chg = 3 + Math.random()*7; }
+      const nx = v.x + Math.cos(v.a)*v.v*dt, nz = v.z + Math.sin(v.a)*v.v*dt;
+      if (nx > 2 && nx < LX-2 && nz > 2 && nz < LZ-2) { v.x = nx; v.z = nz; }
+      else v.a += 2.4;
+      _p.set(v.x, altitude(v.x, v.z), v.z);
+      _s.set(BETES.userData.taille, BETES.userData.taille, 1);
+      _m.compose(_p, q, _s); BETES.setMatrixAt(ib++, _m);
+    }
+  }
+  OISEAUX.count = io; OISEAUX.instanceMatrix.needsUpdate = true;
+  BETES.count = ib;   BETES.instanceMatrix.needsUpdate = true;
+}
+
+// ───────────────────────────────────── le joueur
+const joueur = new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.30, 1.10, 6, 12),
+  new THREE.MeshBasicMaterial({ color: 0xe6d7ac }));
+scene.add(joueur);
+const pos = { x: LX/2, z: LZ/2 };
+
+// viewshed : on marche sur des rayons en gardant l'angle d'horizon max. Même calcul
+// que le sky-view — le fog du doc 06 et l'occlusion sont le même code.
+let vueRayon = 180, visibRayon = 2000;
+
+// Deux axes, longtemps confondus dans mon code — d'où le noir irréaliste :
+//   • CONNAISSANCE (mémoire)   : jamais vu · souvenir · actuel        → discret
+//   • DISTANCE    (perception) : net près, imprécis loin              → continu
+// Le noir ne vaut que pour ce que le RELIEF masque. Ce qui est en vue directe mais
+// lointain doit être visible et flou : « voir beaucoup mais pas précisément » (doc 00).
+// Encodage sur un octet :  0 = jamais vu · 1–127 = souvenir · 128–255 = vu, netteté
+function viewshed() {
+  for (let i = 0; i < w*h; i++) if (fogData[i] >= 128) fogData[i] = 90;   // → souvenir
+  const i0 = Math.round(pos.x/step), j0 = Math.round(pos.z/step);
+  const zEil = altitude(pos.x, pos.z) + 1.7;
+  const R = Math.round(visibRayon/step), dirs = Math.max(180, Math.round(R*2.2));
+  const net = Math.max(1, vueRayon/step);
+  fogData[Math.min(Math.max(j0,0),h-1)*w + Math.min(Math.max(i0,0),w-1)] = 255;
+  for (let d = 0; d < dirs; d++) {
+    const a = d/dirs*6.28318, cx = Math.cos(a), cy = Math.sin(a);
+    let tmax = -Infinity;
+    for (let r = 1; r <= R; r++) {
+      const ii = Math.round(i0 + cx*r), jj = Math.round(j0 + cy*r);
+      if (ii < 0 || ii >= w || jj < 0 || jj >= h) break;
+      const k = jj*w + ii;
+      const t = (Zc[k] - zEil) / (r*step);
+      if (t < tmax) continue;
+      tmax = t;
+      // netteté : pleine jusqu'à `net`, puis décroît — jamais jusqu'au noir
+      const q = r <= net ? 1 : Math.max(0.08, 1 - (r - net)/(R - net + 1e-6));
+      const v = 128 + Math.round(127 * q * q);
+      const ep = Math.min(1 + ((r * 6.3 / dirs) | 0), 4);
+      for (let b = -ep; b <= ep; b++) for (let aa = -ep; aa <= ep; aa++) {
+        const jn = jj+b, iN = ii+aa;
+        if (jn >= 0 && jn < h && iN >= 0 && iN < w && fogData[jn*w+iN] < v)
+          fogData[jn*w+iN] = v;
+      }
+    }
+  }
+  fogTex.needsUpdate = true;
+}
+
+// ── deux modes : LIBRE (façonner, tout voir, se déplacer à la souris)
+//                 INCARNÉ (marcher, fog en ligne de vue)
+let god = true, reel = false;
+const MATS = () => [matSol, eau.material, ...groupes.map(g => g.im.material)];
+function setFog(on) {
+  fogActif = on;
+  for (const m of MATS()) if (m.userData.u) m.userData.u.uFogOn.value = on;
+}
+function setMode(v) {
+  god = v;
+  setFog(!god);
+  joueur.visible = true;                       // reste visible : étalon d'échelle
+  el('mode').innerHTML = 'MNT LiDAR HD · <b style="color:#c8b98a">' +
+    (god ? 'mode libre' : 'incarné') + '</b>';
+  el('aide').innerHTML = (god
+    ? '<kbd>G</kbd> incarner · <kbd>glisser</kbd> déplacer · <kbd>clic</kbd> poser le perso · '
+    : '<kbd>G</kbd> mode libre · <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> marcher · <kbd>F</kbd> fog · ')
+    + '<kbd>A</kbd><kbd>E</kbd> pivoter · <kbd>molette</kbd> zoom · <kbd>O</kbd> orthophoto';
+  if (!god) { portee = Math.min(portee, 300); placerJoueur(); }
+}
+
+const touches = {};
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  touches[k] = true;
+  if (k === 'a') { azimut -= Math.PI/2; majArbres(); majRochers(); placerCamera(); }
+  if (k === 'e') { azimut += Math.PI/2; majArbres(); majRochers(); placerCamera(); }
+  if (k === 'g') setMode(!god);
+  if (k === 'f' && !god) setFog(!fogActif);
+  if (k === 'o') {                       // comparer avec la réalité
+    reel = !reel;
+    matSol.map = reel ? ortho : null;
+    matSol.vertexColors = !reel;
+    matSol.needsUpdate = true;
+    for (const g of groupes) g.im.visible = !reel;   // l'ortho contient déjà les arbres
+    el('reel').hidden = !reel;
+  }
+});
+addEventListener('keyup', e => touches[e.key.toLowerCase()] = false);
+
+// ── déplacement à la souris (mode libre) : on saisit le SOL et on le tire
+const AX_D = new THREE.Vector3(), AX_H = new THREE.Vector3(), AX_Z = new THREE.Vector3();
+let drag = null;
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (god) drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY };
+});
+addEventListener('pointerup', e => {
+  if (drag && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) poser(e);
+  drag = null;
+});
+addEventListener('pointermove', e => {
+  if (!drag) return;
+  cam.matrixWorld.extractBasis(AX_D, AX_H, AX_Z);
+  AX_D.y = 0; AX_D.normalize();
+  AX_H.y = 0; AX_H.normalize();
+  const upx = (cam.right - cam.left) / innerWidth;
+  const upy = (cam.top - cam.bottom) / innerHeight;
+  // le sol est vu sous l'angle INCL : un pixel vertical vaut 1/sin(INCL) au sol
+  cible.addScaledVector(AX_D, -(e.clientX - drag.x) * upx);
+  cible.addScaledVector(AX_H,  (e.clientY - drag.y) * upy / Math.sin(INCL));
+  drag = { ...drag, x: e.clientX, y: e.clientY };
+  placerCamera();
+});
+
+// clic en mode libre : poser le personnage là (puis G pour l'incarner)
+const rayon = new THREE.Raycaster();
+function poser(e) {
+  rayon.setFromCamera(new THREE.Vector2(
+    (e.clientX/innerWidth)*2 - 1, -(e.clientY/innerHeight)*2 + 1), cam);
+  const hit = rayon.intersectObject(sol)[0];
+  if (!hit) return;
+  pos.x = Math.min(Math.max(hit.point.x, 1), LX-1);
+  pos.z = Math.min(Math.max(hit.point.z, 1), LZ-1);
+  fogData.fill(0); viewshed();
+  joueur.position.set(pos.x, altitude(pos.x, pos.z) + 0.85, pos.z);
+}
+addEventListener('wheel', e => {
+  portee = Math.min(1400, Math.max(45, portee * (e.deltaY > 0 ? 1.12 : .89)));
+  placerCamera();
+}, { passive: true });
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); placerCamera(); });
+
+const VITESSE = 7 / 3.6;                 // 7 km/h — le « +2 km/h » du doc 33
+let dernierViewshed = { x: 1e9, z: 1e9 }, horloge = new THREE.Clock();
+
+function marcher(dt) {
+  let mx = 0, mz = 0;
+  if (touches['z'] || touches['arrowup'])    mz -= 1;
+  if (touches['s'] || touches['arrowdown'])  mz += 1;
+  if (touches['q'] || touches['arrowleft'])  mx -= 1;
+  if (touches['d'] || touches['arrowright']) mx += 1;
+  if (!mx && !mz) return false;
+  const n = Math.hypot(mx, mz); mx /= n; mz /= n;
+  const c = Math.cos(azimut), s = Math.sin(azimut);       // relatif à la caméra
+  let dx = (mx*c + mz*s) * VITESSE * dt;
+  let dz = (-mx*s + mz*c) * VITESSE * dt;
+  const nx = Math.min(Math.max(pos.x + dx, 1), LX-1);
+  const nz = Math.min(Math.max(pos.z + dz, 1), LZ-1);
+  // la pente freine, et bloque au-delà de 40° (doc 31 : c'est ça qui rend marchable)
+  const monte = (altitude(nx, nz) - altitude(pos.x, pos.z)) / Math.max(Math.hypot(dx,dz), 1e-4);
+  if (Math.atan(Math.abs(monte)) * 57.3 > 40) return false;
+  pos.x = nx; pos.z = nz;
+  return true;
+}
+
+function placerJoueur() {
+  const y = altitude(pos.x, pos.z);
+  joueur.position.set(pos.x, y + 0.85, pos.z);
+  if (Math.hypot(pos.x - dernierViewshed.x, pos.z - dernierViewshed.z) > 3) {
+    viewshed(); dernierViewshed = { x: pos.x, z: pos.z };
+  }
+  if (!god) { cible.set(pos.x, y, pos.z); placerCamera(); }   // la caméra ne suit qu'incarné
+}
+
+// ───────────────────────────────────── UI
+const chrono = {};
+el('dens').oninput = () => {
+  densite = +el('dens').value / 100;
+  el('vd').textContent = el('dens').value + ' %';
+  const vus = majArbres();
+  el('stats').textContent = el('stats').textContent.replace(/sprites .*/,
+    `sprites  ${vus.toLocaleString('fr')} / ${arbres.length.toLocaleString('fr')}`);
+};
+
+function rendu(avecAO = true) {
+  const s = +el('lisse').value, k = +el('k').value, g = +el('gain').value;
+  const T = n => { const t0 = performance.now();
+                   return () => chrono[n] = Math.round(performance.now()-t0); };
+  let t;
+  if (s !== rendu.s) {
+    t = T('filtres');
+    Z0 = bilateral(Zbrut, s); bf = flouLarge(Z0, 250); ZDOUX = flou(Z0, 7);
+    calcRaide(); calcBerge(); rendu.s = s; t();
+  }
+  appliquer(k, g);
+  t = T('maillage'); majTerrain(); t();
+  t = T('ombrage');  colorier(avecAO); t();
+  t = T('arbres');   const vus = majArbres(); t();
+  let mn = Infinity, mx = -Infinity;                 // pas de Math.min(...) : 1 M valeurs
+  for (const v of Zc) { if (v < mn) mn = v; if (v > mx) mx = v; }
+  t = T('eau'); planEau = detecterEau(); majEau(+el('eau').value); t();
+  el('stats').textContent =
+    `zone     ${(LX/1000).toFixed(1)} × ${(LZ/1000).toFixed(1)} km · pas ${step.toFixed(2)} m\n` +
+    `relief   Δ ${(mx-mn).toFixed(0)} m\n` +
+    `rivière  ${planEau.moy.toFixed(1)} m · ${planEau.n.toLocaleString('fr')} pts d'eau\n` +
+    `sprites  ${vus.toLocaleString('fr')} / ${arbres.length.toLocaleString('fr')}\n` +
+    `chargé   ${T_CHARGE} ms\n` +
+    `calcul   ${Object.entries(chrono).map(([k,v]) => k+' '+v+'ms').join(' · ')}`;
+  placerJoueur();
+}
+const maj = (id, span, fmt) => {
+  el(id).oninput = () => { el(span).textContent = fmt(+el(id).value); rendu(false); };
+  el(id).onchange = () => rendu(true);
+};
+maj('lisse', 'vl', v => v + ' m');
+maj('k', 'vk', v => v.toFixed(2));
+maj('gain', 'vg', v => '×' + v.toFixed(1));
+el('ruiss').oninput = () => {
+  filtreRuiss = +el('ruiss').value;
+  el('vr').textContent = filtreRuiss ? filtreRuiss + '°' : 'aucun';
+  planEau = detecterEau(); majEau(+el('eau').value);
+};
+el('eau').oninput = () => {
+  const v = +el('eau').value;
+  el('ve').textContent = (v >= 0 ? '+' : '') + v.toFixed(1) + ' m';
+  majEau(v);
+};
+el('incl').oninput = () => {
+  const deg = +el('incl').value;
+  INCL = deg * Math.PI/180;
+  el('vi').textContent = deg.toFixed(1) + '°';
+  const ex = 1/Math.tan(INCL);
+  el('vex').textContent = 'pentes ×' + ex.toFixed(1) + (Math.abs(ex-1) < 0.06 ? ' (fidèle)' : '');
+  placerCamera();
+};
+el('portee').oninput = () => {
+  vueRayon = +el('portee').value; el('vp').textContent = vueRayon + ' m';
+  fogData.fill(0); viewshed();
+};
+el('visib').oninput = () => {
+  visibRayon = +el('visib').value; el('vv').textContent = visibRayon + ' m';
+  fogData.fill(0); viewshed();
+};
+
+// ───────────────────────────────────── go
+try { await chargerHydro(); } catch (e) { console.warn('hydro.png absent :', e); }
+calcRaide(); calcBerge();
+rendu(true);
+viewshed();
+cible.set(LX/2, altitude(LX/2, LZ/2), LZ/2);
+portee = 640;
+setMode(true);                       // on démarre en mode libre : façonner d'abord
+placerCamera();
+const selm = el('monde');
+selm.innerHTML = MONDES.map(([f, n]) =>
+  `<option value="${f}"${f === choisi ? ' selected' : ''}>${n}</option>`).join('');
+selm.onchange = () => location.search = '?m=' + selm.value;
+
+el('load').hidden = true; el('ui').hidden = false; el('aide').hidden = false;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(horloge.getDelta(), 0.1);
+  animerVie(dt);
+  if (!god && marcher(dt)) placerJoueur();
+  renderer.render(scene, cam);
+});
+window.__eau = eau; window.__scene = scene;
+window.repere = () => {          // la pente la plus forte : où juger les falaises
+  let k = 0, pmax = 0;
+  for (let j = 3; j < h-3; j++) for (let i = 3; i < w-3; i++) {
+    const n = j*w+i;
+    const p = Math.hypot(Zc[n+3]-Zc[n-3], Zc[n+3*w]-Zc[n-3*w]) / (6*step);
+    if (p > pmax) { pmax = p; k = n; }
+  }
+  return { x: (k % w) * step, z: ((k/w)|0) * step, pente: Math.round(Math.atan(pmax)*57.3) };
+};
+window.vue = (x, z, p) => {
+  pos.x = x; pos.z = z; if (p) portee = p;
+  fogData.fill(0); viewshed(); placerJoueur();
+  cible.set(x, altitude(x, z), z); placerCamera();   // vaut aussi en mode libre
+};
+</script>

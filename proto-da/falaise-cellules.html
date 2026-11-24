@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jupire — falaise selon la taille de cellule</title>
+<style>
+  :root {
+    --fond: #16181a; --panneau: #1f2225; --bord: #33383d; --texte: #e4e0d6;
+    --doux: #a09a8c; --accent: #c9a654; --actif: #3a4a2c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--fond); color: var(--texte);
+    font: 14px/1.45 system-ui, "Segoe UI", sans-serif;
+    display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+  }
+  header {
+    background: var(--panneau); border-bottom: 1px solid var(--bord);
+    padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .groupe { display: flex; align-items: center; gap: 6px; }
+  .groupe > span { color: var(--doux); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  button {
+    font: inherit; color: var(--texte); background: #2a2e32; border: 1px solid var(--bord);
+    padding: 5px 11px; border-radius: 4px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button[aria-pressed="true"] { background: var(--actif); border-color: #7d8a45; font-weight: 600; }
+  kbd { font: 11px ui-monospace, Consolas, monospace; color: var(--doux); margin-left: 4px; }
+  main { display: grid; grid-template-columns: 1fr 350px; min-height: 0; }
+  #vue { overflow: auto; background: #0e0f10; cursor: grab; position: relative; }
+  #vue.glisse { cursor: grabbing; }
+  canvas { display: block; image-rendering: pixelated; }
+  #etat {
+    position: fixed; left: 14px; bottom: 12px; background: #000a; padding: 4px 9px;
+    border-radius: 4px; font-size: 12px; color: var(--doux); pointer-events: none;
+  }
+  aside {
+    background: var(--panneau); border-left: 1px solid var(--bord);
+    padding: 14px; overflow: auto;
+  }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 18px 0 8px; }
+  aside h2:first-child { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--bord); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--doux); font-weight: 500; font-size: 12px; }
+  tr.courant td { background: var(--actif); }
+  p, li { margin: 0 0 7px; }
+  ul { margin: 0; padding-left: 18px; }
+  .doux { color: var(--doux); font-size: 12.5px; }
+  .verdict { border-left: 3px solid var(--accent); padding-left: 10px; }
+  @media (max-width: 900px) {
+    body { overflow: auto; } main { grid-template-columns: 1fr; }
+    #vue { height: 70vh; } aside { border-left: 0; border-top: 1px solid var(--bord); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Falaise de Balazuc — rendu selon la taille de cellule</h1>
+  <div class="groupe" id="g-cellule"><span>Cellule</span></div>
+  <div class="groupe" id="g-nivel"><span>Nivellement</span></div>
+  <div class="groupe" id="g-zoom"><span>Zoom</span></div>
+  <div class="groupe"><span>Vue</span>
+    <button id="tourne-g" title="Tourner d'un quart de tour">⟲ <kbd>←</kbd></button>
+    <button id="tourne-d" title="Tourner d'un quart de tour">⟳ <kbd>→</kbd></button>
+  </div>
+  <div class="groupe"><span>Aller à</span>
+    <button id="va-maison">la maison</button>
+    <button id="va-berge">la berge</button>
+  </div>
+</header>
+<main>
+  <div id="vue"><canvas id="toile"></canvas></div>
+  <aside>
+    <h2>Mesures sur cet extrait</h2>
+    <table id="mesures">
+      <thead><tr><th>Cellule</th><th title="Écart moyen d'altitude avec le relevé à 1 m">Écart moyen</th><th title="Plus grand écart d'altitude">Écart max</th><th title="Part de la surface à plus de 60° qui reste à plus de 60°">Parois gardées</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="doux" style="margin-top:6px">« Parois gardées » : part des surfaces à plus de 60° du relevé à 1 m qui restent à plus de 60° une fois le terrain reconstruit à cette taille de cellule.</p>
+
+    <h2>Effet du nivellement</h2>
+    <p id="niv-mesure"></p>
+    <p class="doux">Le nivellement lisse le terrain là où les écarts entre voisins sont faibles et s'arrête là où ils sont forts : un replat bosselé devient plan, une paroi ne bouge pas. « Plat » désigne ici les zones à moins de 20° de pente. Il s'applique au relevé avant le découpage en cellules. Touche <kbd>N</kbd> pour passer d'un réglage à l'autre.</p>
+
+    <h2>Poids brut des données</h2>
+    <table id="poids">
+      <thead><tr><th>Cellule</th><th>Aubenas → mer</th><th>Bassin entier</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="doux" style="margin-top:6px">3 octets par cellule (altitude + matière), avant compression. Aubenas → mer : 13 000 km². Bassin : bande côtière de 920 000 km² (doc 33).</p>
+
+    <h2>Lecture</h2>
+    <p class="verdict" id="verdict"></p>
+
+    <h2>Repères d'échelle</h2>
+    <ul>
+      <li>Maison au toit de chaume : 9 × 6 m, sur le plateau.</li>
+      <li>Personnages rouges : 1,75 m, un près de la maison, un sur la berge.</li>
+      <li>Extrait : 480 × 480 m, dénivelé <span id="deniv"></span> m.</li>
+    </ul>
+
+    <h2>Ce que cette page ne montre pas</h2>
+    <ul class="doux">
+      <li>Aperçu calculé dans le navigateur, pas le moteur du jeu : il montre la géométrie et le grain, pas la finition.</li>
+      <li>Aucun arbre : en jeu la végétation masquera une partie des pentes.</li>
+      <li>Matières déduites de la pente (roche, éboulis, garrigue), strates de roche ajoutées par calcul : pas des textures dessinées.</li>
+      <li>Une carte d'altitudes ne sait faire ni surplomb ni grotte, quelle que soit la cellule (doc 34).</li>
+      <li>Une paroi qui tourne le dos à la caméra reste invisible : essaie la rotation.</li>
+    </ul>
+    <p class="doux" style="margin-top:12px" id="source"></p>
+  </aside>
+</main>
+<div id="etat">calcul…</div>
+
+<script src="donnees-falaise.js"></script>
+<script>
+"use strict";
+const D = window.DONNEES;
+const N = D.n, COTE = D.cote_m, ZR = D.zmax - D.zmin;
+const CELLULES = [10, 5, 2, 1];
+const ZOOMS = [[2, "large"], [4, "moyen"], [8, "jeu"]];
+const KZ = 0.6124;              // px verticaux par px/m : dimétrique 2:1, caméra à 30°
+const ELEV = 40 * Math.PI / 180; // hauteur du soleil
+const NIVEAUX = [["aucun", 0, 0], ["doux", 0.30, 60], ["fort", 0.45, 300]];   // nom, seuil d'écart (m par mètre), passes
+const etat = { cellule: 2, zoom: 4, rot: D.rotation_defaut, nivel: 1 };
+
+/* ---------- décodage ---------- */
+function b64(s) { const b = atob(s), a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+const H0 = new Float32Array(N * N), E0 = new Uint8Array(N * N);
+{
+  const u = new Uint16Array(b64(D.alt_cm_u16).buffer), e = b64(D.eau_bits);
+  for (let k = 0; k < N * N; k++) { H0[k] = u[k] / 100; E0[k] = (e[k >> 3] >> (k & 7)) & 1; }
+}
+
+/* ---------- rotations : un quart de tour envoie (i, j) sur (n-1-j, i) ---------- */
+function rotPt(i, j, r, n) { for (let k = 0; k < r; k++) { const t = i; i = n - 1 - j; j = t; } return [i, j]; }
+function rotVec(x, y, r) { for (let k = 0; k < r; k++) { const t = x; x = -y; y = t; } return [x, y]; }
+function tourner(src, r, Type) {
+  const out = new Type(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const [a, b] = rotPt(i, j, r, N); out[b * N + a] = src[j * N + i]; }
+  return out;
+}
+// Soleil fixe dans le monde. Choisi pour venir de la gauche et un peu de face dans la vue par défaut.
+const SOLEIL_MONDE = (() => { let [x, y] = [-0.45, 1.15]; const l = Math.hypot(x, y); return rotVec(x / l, y / l, (4 - D.rotation_defaut) % 4); })();
+
+/* ---------- reconstruction du terrain à une taille de cellule ---------- */
+function pentes(H) {           // pente (tangente) à 1 m, différences centrées
+  const S = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const i0 = Math.max(i - 1, 0), i1 = Math.min(i + 1, N - 1), j0 = Math.max(j - 1, 0), j1 = Math.min(j + 1, N - 1);
+    S[j * N + i] = Math.hypot((H[j * N + i1] - H[j * N + i0]) / (i1 - i0), (H[j1 * N + i] - H[j0 * N + i]) / (j1 - j0));
+  }
+  return S;
+}
+function coins(H, c) {         // altitude des coins de cellule = moyenne du relevé autour du coin
+  const nc = COTE / c + 1, G = new Float32Array(nc * nc), h = c >> 1;
+  for (let b = 0; b < nc; b++) for (let a = 0; a < nc; a++) {
+    let s = 0, n = 0;
+    for (let j = Math.max(b * c - h, 0); j <= Math.min(b * c + h, N - 1); j++)
+      for (let i = Math.max(a * c - h, 0); i <= Math.min(a * c + h, N - 1); i++) { s += H[j * N + i]; n++; }
+    G[b * nc + a] = s / n;
+  }
+  return G;
+}
+function matieres(S, c) {      // 0 garrigue, 1 éboulis, 2 roche — décidé sur le relevé à 1 m, stocké par cellule
+  const n = COTE / c, M = new Uint8Array(n * n);
+  for (let b = 0; b < n; b++) for (let a = 0; a < n; a++) {
+    let raide = 0, somme = 0, k = 0;
+    for (let j = b * c; j < b * c + c; j++) for (let i = a * c; i < a * c + c; i++) { const s = S[j * N + i]; if (s > 0.84) raide++; somme += s; k++; }
+    M[b * n + a] = raide / k >= 0.3 ? 2 : somme / k > 0.36 ? 1 : 0;
+  }
+  return M;
+}
+function bilin(G, nc, c, x, y) {
+  const u = x / c, v = y / c;
+  const a = Math.min(u | 0, nc - 2), b = Math.min(v | 0, nc - 2), fu = u - a, fv = v - b, r = b * nc + a;
+  return (G[r] * (1 - fu) + G[r + 1] * fu) * (1 - fv) + (G[r + nc] * (1 - fu) + G[r + nc + 1] * fu) * fv;
+}
+function reconstruit(G, c) {   // surface reconstruite, rééchantillonnée à 1 m
+  const nc = COTE / c + 1, R = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) R[j * N + i] = bilin(G, nc, c, i, j);
+  return R;
+}
+
+/* ---------- nivellement : lissage freiné par les forts écarts ----------
+   Chaque passe rapproche un point de ses 4 voisins. Le poids de chaque liaison est fixé
+   une fois pour toutes d'après le relevé brut (légèrement adouci) : exp(-(écart/seuil)²).
+   Écart faible = liaison forte = ça s'aplanit ; écart fort (paroi, talus raide) = liaison
+   coupée = rien ne bouge. Les poids ne suivant pas le lissage, aucune marche n'est créée.
+   L'eau est fixe pour que les berges ne s'enfoncent pas. */
+const NIV = {};
+function niveler(n) {
+  if (NIV[n]) return NIV[n];
+  const [, seuil, passes] = NIVEAUX[n];
+  let A = Float32Array.from(H0);
+  if (passes) {
+    const Gd = new Float32Array(N * N);                  // relevé adouci 3 x 3, sert seulement à juger les écarts
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      let s = 0, q = 0;
+      for (let b = Math.max(j - 1, 0); b <= Math.min(j + 1, N - 1); b++) for (let a = Math.max(i - 1, 0); a <= Math.min(i + 1, N - 1); a++) { s += H0[b * N + a]; q++; }
+      Gd[j * N + i] = s / q;
+    }
+    const WX = new Float32Array(N * N), WY = new Float32Array(N * N);   // liaison vers la droite, vers le bas
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const k = j * N + i;
+      if (i < N - 1) WX[k] = 0.2 * Math.exp(-(((Gd[k + 1] - Gd[k]) / seuil) ** 2));
+      if (j < N - 1) WY[k] = 0.2 * Math.exp(-(((Gd[k + N] - Gd[k]) / seuil) ** 2));
+    }
+    let B = new Float32Array(N * N);
+    for (let t = 0; t < passes; t++) {
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+        const k = j * N + i, z = A[k];
+        if (E0[k]) { B[k] = z; continue; }
+        let f = WX[k] * (A[k + 1 < N * N ? k + 1 : k] - z) + WY[k] * (A[k + N < N * N ? k + N : k] - z);
+        if (i > 0) f += WX[k - 1] * (A[k - 1] - z);
+        if (j > 0) f += WY[k - N] * (A[k - N] - z);
+        B[k] = z + f;
+      }
+      [A, B] = [B, A];
+    }
+  }
+  return NIV[n] = A;
+}
+
+/* ---------- mesures (indépendantes de la vue), toujours par rapport au relevé brut ---------- */
+const S0 = pentes(H0);
+const PLAT = (() => {          // points dont tout le voisinage de 7 x 7 m est à moins de 20° et hors eau
+  const L = [];
+  for (let j = 4; j < N - 4; j += 2) for (let i = 4; i < N - 4; i += 2) {
+    let ok = true;
+    for (let b = -3; b <= 3 && ok; b++) for (let a = -3; a <= 3; a++) { const k = (j + b) * N + i + a; if (S0[k] > 0.36 || E0[k]) { ok = false; break; } }
+    if (ok) L.push(j * N + i);
+  }
+  return L;
+})();
+function bosses(H) {            // sur le plat : écart moyen entre un point et la moyenne des 7 x 7 m autour
+  let s = 0;
+  for (const k of PLAT) { let m = 0; for (let b = -3; b <= 3; b++) for (let a = -3; a <= 3; a++) m += H[k + b * N + a]; s += Math.abs(H[k] - m / 49); }
+  return s / PLAT.length;
+}
+const MES = {};
+function mesures(niv) {
+  if (MES[niv]) return MES[niv];
+  const Hn = niveler(niv);
+  let ref = 0; for (let k = 0; k < N * N; k++) if (S0[k] > 1.732) ref++;
+  const lignes = CELLULES.map(c => {
+    const R = reconstruit(coins(Hn, c), c), S = pentes(R);
+    let e2 = 0, emax = 0, garde = 0;
+    for (let k = 0; k < N * N; k++) { const e = Math.abs(R[k] - H0[k]); e2 += e; if (e > emax) emax = e; if (S[k] > 1.732) garde++; }
+    return { c, moy: e2 / (N * N), max: emax, garde: garde / ref };
+  });
+  const Sn = pentes(Hn); let parois = 0, dep = 0, depRaide = 0, nRaide = 0;
+  for (let k = 0; k < N * N; k++) { if (Sn[k] > 1.732) parois++; const e = Math.abs(Hn[k] - H0[k]); dep += e; if (S0[k] > 1.0) { depRaide += e; nRaide++; } }
+  return MES[niv] = { lignes, bossesAvant: bosses(H0), bossesApres: bosses(Hn), parois: parois / ref, dep: dep / (N * N), depRaide: depRaide / nRaide };
+}
+
+/* ---------- palettes (5 tons, du plus sombre au plus clair) ---------- */
+function pal(hexs) { return hexs.map(h => { const v = parseInt(h.slice(1), 16); return 0xff000000 | ((v & 255) << 16) | (v & 0xff00) | (v >> 16); }); }
+const P = {
+  garrigue: pal(["#2c3722", "#44532c", "#5d6e37", "#7a8845", "#98a25a"]),
+  eboulis:  pal(["#3b3026", "#584835", "#776448", "#96825f", "#b5a17a"]),
+  roche:    pal(["#45464a", "#666664", "#8b8880", "#b2ad9f", "#d7d1bf"]),
+  eau:      pal(["#1c434b", "#265a63", "#31717a", "#3b858c", "#4a979b"]),
+  chaume:   pal(["#56401f", "#7a5b2a", "#a17e3b", "#c3a051", "#dcc072"]),
+  mur:      pal(["#655646", "#88755e", "#b19f82", "#d3c3a3", "#ebdfc2"]),
+  rouge:    pal(["#5e1814", "#86231d", "#ad2f27", "#cf4337", "#e2604f"]),
+  coupe:    pal(["#211d1a", "#2b2521", "#352d27"]),
+};
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
+function hasard(n) { n = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b); n ^= n >>> 13; n = Math.imul(n, 0xc2b2ae35); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+
+/* ---------- rendu ---------- */
+const toile = document.getElementById("toile"), vue = document.getElementById("vue");
+const cache = {};
+function grilles(r, niv) {
+  const cle = r + "_" + niv;
+  if (!cache[cle]) { const H = tourner(niveler(niv), r, Float32Array); cache[cle] = { H, E: tourner(E0, r, Uint8Array), S: pentes(H) }; }
+  return cache[cle];
+}
+let reperes = {};
+
+function rendre() {
+  const t0 = performance.now();
+  const { cellule: c, zoom: p, rot: r } = etat;
+  const { H, E, S } = grilles(r, etat.nivel);
+  const nc = COTE / c + 1, G = coins(H, c), MC = matieres(S, c), nm = COTE / c;
+  const R = reconstruit(G, c);
+
+  // Ombres portées, sur la surface reconstruite, pas de 1,5 m.
+  const [sxh, syh] = rotVec(SOLEIL_MONDE[0], SOLEIL_MONDE[1], r);
+  const ch = Math.cos(ELEV), sunX = sxh * ch, sunY = syh * ch, sunZ = Math.sin(ELEV), tanE = Math.tan(ELEV);
+  const OMB = new Uint8Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const z0 = R[j * N + i] + 0.6; let x = i, y = j;
+    for (let k = 1; k < 110; k++) {
+      x += sxh * 1.5; y += syh * 1.5; const hz = z0 + k * 1.5 * tanE;
+      if (x < 0 || y < 0 || x > N - 1 || y > N - 1 || hz > ZR) break;
+      if (k > 1 && R[Math.round(y) * N + Math.round(x)] > hz) { OMB[j * N + i] = 1; break; }
+    }
+  }
+
+  // Treillis fin : un point par pixel de sol.
+  const d = 2 / p, nf = COTE * p / 2 + 1;
+  const F = new Float32Array(nf * nf), M = new Uint8Array(nf * nf);
+  for (let j = 0; j < nf; j++) {
+    const y = j * d, yi = Math.min(Math.round(y), N - 1), mb = Math.min(y / c | 0, nm - 1);
+    for (let i = 0; i < nf; i++) {
+      const x = i * d, xi = Math.min(Math.round(x), N - 1), k1 = yi * N + xi;
+      let z = bilin(G, nc, c, x, y), m = MC[mb * nm + Math.min(x / c | 0, nm - 1)];
+      if (E[k1] && z <= H[k1] + 0.4) { z = H[k1]; m = 3; }   // nappe : le LiDAR donne déjà la surface de l'eau
+      F[j * nf + i] = z; M[j * nf + i] = m;
+    }
+  }
+
+  // Repères d'échelle, posés sur le treillis (indépendants de la taille de cellule).
+  reperes = {};
+  function pose(nom, pos, demiX, demiY, hauteur, mat) {
+    const [cx, cy] = rotPt(pos[0], pos[1], r, N);
+    if (r & 1) [demiX, demiY] = [demiY, demiX];
+    const base = bilin(G, nc, c, cx, cy);
+    const ax = Math.max(demiX, d * 0.51), ay = Math.max(demiY, d * 0.51);
+    for (let j = Math.ceil((cy - ay) / d); j <= (cy + ay) / d; j++) for (let i = Math.ceil((cx - ax) / d); i <= (cx + ax) / d; i++) {
+      if (i < 0 || j < 0 || i >= nf || j >= nf) continue;
+      F[j * nf + i] = base + hauteur(i * d - cx, j * d - cy, demiX, demiY); M[j * nf + i] = mat;
+    }
+    reperes[nom] = [cx / d, cy / d, base];
+  }
+  pose("maison", D.maison, 4.5, 3, (dx, dy, ax, ay) => 2.8 + (Math.min(ax, ay) - (ax > ay ? Math.abs(dy) : Math.abs(dx))) * 1.1, 4);
+  pose("habitant", [D.maison[0] + 9, D.maison[1] + 3], 0.3, 0.3, () => 1.75, 5);
+  pose("berge", D.berge, 0.3, 0.3, () => 1.75, 5);
+
+  // Projection dimétrique 2:1 : x écran = i - j, y écran = (i + j) / 2 - altitude.
+  const zs = p * KZ, haut = Math.ceil(ZR * zs) + 8, socle = Math.ceil(4 * zs);
+  const W = 2 * (nf - 1) + 1, HT = haut + nf + socle + 2;
+  toile.width = W; toile.height = HT;
+  const dpr = window.devicePixelRatio || 1;
+  toile.style.width = W / dpr + "px"; toile.style.height = HT / dpr + "px";
+  const ctx = toile.getContext("2d"), img = ctx.createImageData(W, HT), buf = new Uint32Array(img.data.buffer);
+  const seuilContour = 3 / (d * 1.414);
+
+  for (let sx = 0; sx < W; sx++) {
+    const k = sx - (nf - 1), iMax = Math.min(nf - 1, nf - 1 + k), iMin = Math.max(0, k);
+    let yMin = HT, premier = true, cache_ = 0;
+    for (let i = iMax; i >= iMin; i--) {           // du plus proche au plus lointain
+      const j = i - k, idx = j * nf + i, z = F[idx];
+      const yg = haut + ((i + j) >> 1), y = yg - Math.round(z * zs);
+      if (premier) {                                // tranche de terrain au bord de l'extrait
+        const cote = k >= 0 ? 0 : 1, bas = yg + socle;
+        for (let row = y + 1; row <= bas; row++) buf[row * W + sx] = P.coupe[((row - yg) / (zs * 1.5) & 1) + cote];
+        yMin = y + 1; premier = false;
+      }
+      if (y >= yMin) { cache_++; continue; }
+      // Normale au milieu du pas vers le point plus proche.
+      const i1 = Math.min(i + 1, nf - 1), i0 = i1 - 1, j1 = Math.min(j + 1, nf - 1), j0 = j1 - 1;
+      const a = F[j0 * nf + i0], b = F[j0 * nf + i1], cc = F[j1 * nf + i0], dd = F[j1 * nf + i1];
+      const gx = (b - a + dd - cc) / (2 * d), gy = (cc - a + dd - b) / (2 * d), pente = Math.hypot(gx, gy);
+      const inv = 1 / Math.sqrt(gx * gx + gy * gy + 1);
+      let lam = (-gx * sunX - gy * sunY + sunZ) * inv; if (lam < 0) lam = 0;
+      const mx = Math.min(Math.round((i + 0.5) * d), N - 1), my = Math.min(Math.round((j + 0.5) * d), N - 1);
+      const ombre = OMB[my * N + mx];
+      let m = M[idx], palette, strates = false, v;
+      if (m === 3 && pente < 0.5) { palette = P.eau; v = ombre ? 0.2 : 0.55; }
+      else {
+        if (ombre) lam *= 0.2;
+        v = 0.16 + 0.84 * lam;
+        if (m === 4) palette = pente > 2.5 ? P.mur : P.chaume;
+        else if (m === 5) palette = P.rouge;
+        else if (m === 3 || pente > 1.2 || m === 2) { palette = P.roche; strates = pente > 0.8; }
+        else if (m === 1) palette = P.eboulis;
+        else { palette = P.garrigue; v += (hasard((i * d / 3 | 0) * 7919 + (j * d / 3 | 0)) - 0.5) * 0.1; }
+      }
+      const n1 = palette.length - 1;
+      for (let row = y; row < yMin; row++) {
+        let vv = v;
+        if (strates) vv += (hasard((z - (row - y) / zs) / 1.3 | 0) - 0.5) * 0.24;
+        else if (palette === P.eau) vv += (hasard(row * 31 + (sx >> 2)) - 0.5) * 0.16;
+        let q = Math.floor(vv * n1 + 0.5 + (BAYER[(row & 3) * 4 + (sx & 3)] - 0.5) * 0.8);
+        buf[row * W + sx] = palette[q < 0 ? 0 : q > n1 ? n1 : q];
+      }
+      if (cache_ >= seuilContour && yMin < HT) {    // contour sombre sur la crête qui masquait
+        const px = buf[yMin * W + sx];
+        buf[yMin * W + sx] = 0xff000000 | (((px >> 16 & 255) * 0.55) << 16) | (((px >> 8 & 255) * 0.55) << 8) | ((px & 255) * 0.55);
+      }
+      yMin = y; cache_ = 0;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  rendre.geo = { nf, haut, zs, dpr };
+
+  const ms = mesures(etat.nivel), m = ms.lignes.find(x => x.c === c);
+  document.querySelector("#mesures tbody").innerHTML = ms.lignes.map(l =>
+    `<tr data-c="${l.c}"><td>${l.c} m</td><td>${l.moy.toFixed(2)} m</td><td>${l.max.toFixed(1)} m</td><td>${pc(l.garde)}</td></tr>`).join("");
+  document.getElementById("niv-mesure").textContent = etat.nivel === 0
+    ? `Aucun : bosses du plat de ${cm(ms.bossesAvant)} en moyenne (relevé brut).`
+    : `Réglage « ${NIVEAUX[etat.nivel][0]} » : bosses du plat ${cm(ms.bossesAvant)} → ${cm(ms.bossesApres)} ; surface de parois à plus de 60° : ${pc(ms.parois)} de celle du relevé (au-dessus de 100 %, pieds et sommets de paroi deviennent plus nets) ; altitude déplacée de ${cm(ms.dep)} en moyenne, ${cm(ms.depRaide)} dans les pentes raides.`;
+  document.getElementById("etat").textContent =
+    `cellule ${c} m · nivellement ${NIVEAUX[etat.nivel][0]} · ${p} px par mètre · un écran de 1920 px montre ${Math.round(1920 / p)} m · calcul ${Math.round(performance.now() - t0)} ms`;
+  document.querySelectorAll("#mesures tbody tr, #poids tbody tr").forEach(tr => tr.classList.toggle("courant", +tr.dataset.c === c));
+  document.getElementById("verdict").textContent = VERDICTS[c](m);
+}
+
+const VERDICTS = {
+  10: m => `À 10 m, il ne reste que ${pc(m.garde)} des parois : la falaise devient un talus raide et lisse, et l'altitude se trompe jusqu'à ${m.max.toFixed(0)} m. Illisible pour ton besoin.`,
+  5:  m => `À 5 m, ${pc(m.garde)} des parois restent verticales. La masse de la falaise est là, mais vires et ressauts sont fondus.`,
+  2:  m => `À 2 m, ${pc(m.garde)} des parois restent verticales, écart moyen de ${m.moy.toFixed(2)} m. La falaise se lit ; les détails plus petits qu'une maison sont arrondis.`,
+  1:  m => `À 1 m, c'est le relevé à pleine finesse. Compare avec 2 m (touches 3 et 4) : le gain est réel sur les arêtes, pour un poids multiplié par 4.`,
+};
+function pc(x) { return Math.round(x * 100) + " %"; }
+function cm(x) { return x < 1 ? (x * 100).toFixed(x < 0.1 ? 1 : 0).replace(".", ",") + " cm" : x.toFixed(1).replace(".", ",") + " m"; }
+
+/* ---------- interface ---------- */
+function boutons(id, liste, cle, libelle) {
+  const g = document.getElementById(id);
+  liste.forEach((v, n) => {
+    const b = document.createElement("button"); b.innerHTML = libelle(v, n); b.dataset.v = Array.isArray(v) ? v[0] : v;
+    b.onclick = () => regler(cle, +b.dataset.v); g.appendChild(b);
+  });
+}
+boutons("g-cellule", CELLULES, "cellule", (v, n) => `${v} m <kbd>${n + 1}</kbd>`);
+boutons("g-nivel", NIVEAUX.map((v, n) => [n, v[0]]), "nivel", v => v[1]);
+boutons("g-zoom", ZOOMS, "zoom", v => `${v[1]} · ${v[0]} px/m`);
+
+function regler(cle, v) {
+  const g = rendre.geo, ancienZoom = etat.zoom;
+  const cx = (vue.scrollLeft + vue.clientWidth / 2) / (vue.scrollWidth || 1), cy = (vue.scrollTop + vue.clientHeight / 2) / (vue.scrollHeight || 1);
+  etat[cle] = v;
+  for (const [id, k] of [["g-cellule", "cellule"], ["g-zoom", "zoom"], ["g-nivel", "nivel"]])
+    document.querySelectorAll(`#${id} button`).forEach(b => b.setAttribute("aria-pressed", +b.dataset.v === etat[k]));
+  document.getElementById("etat").textContent = "calcul…";
+  setTimeout(() => {
+    rendre();
+    if (cle === "zoom" && g && ancienZoom !== v) { vue.scrollLeft = cx * vue.scrollWidth - vue.clientWidth / 2; vue.scrollTop = cy * vue.scrollHeight - vue.clientHeight / 2; }
+    if (cle === "rot" || !g) aller("maison");
+  }, 15);
+}
+function aller(nom) {
+  const g = rendre.geo, q = reperes[nom]; if (!g || !q) return;
+  const x = (q[0] - q[1] + g.nf - 1) / g.dpr, y = (g.haut + (q[0] + q[1]) / 2 - q[2] * g.zs) / g.dpr;
+  vue.scrollLeft = x - vue.clientWidth / 2; vue.scrollTop = y - vue.clientHeight / 2;
+}
+document.getElementById("tourne-g").onclick = () => regler("rot", (etat.rot + 3) % 4);
+document.getElementById("tourne-d").onclick = () => regler("rot", (etat.rot + 1) % 4);
+document.getElementById("va-maison").onclick = () => aller("maison");
+document.getElementById("va-berge").onclick = () => aller("berge");
+addEventListener("keydown", e => {
+  if (e.key >= "1" && e.key <= "4") regler("cellule", CELLULES[+e.key - 1]);
+  else if (e.key === "n" || e.key === "N") regler("nivel", (etat.nivel + 1) % NIVEAUX.length);
+  else if (e.key === "ArrowLeft") { e.preventDefault(); regler("rot", (etat.rot + 3) % 4); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); regler("rot", (etat.rot + 1) % 4); }
+});
+{ // glisser pour déplacer la vue
+  let pt = null;
+  vue.addEventListener("pointerdown", e => { pt = [e.clientX, e.clientY, vue.scrollLeft, vue.scrollTop]; vue.classList.add("glisse"); vue.setPointerCapture(e.pointerId); });
+  vue.addEventListener("pointermove", e => { if (pt) { vue.scrollLeft = pt[2] - (e.clientX - pt[0]); vue.scrollTop = pt[3] - (e.clientY - pt[1]); } });
+  vue.addEventListener("pointerup", () => { pt = null; vue.classList.remove("glisse"); });
+}
+
+/* ---------- tableaux ---------- */
+function go(km2, c) { const g = km2 * 1e6 / (c * c) * 3 / 1e9; return g >= 100 ? Math.round(g / 10) * 10 + " Go" : g >= 10 ? Math.round(g) + " Go" : g.toFixed(1).replace(".", ",") + " Go"; }
+document.querySelector("#poids tbody").innerHTML = CELLULES.map(c =>
+  `<tr data-c="${c}"><td>${c} m</td><td>${go(13000, c)}</td><td>${go(920000, c)}</td></tr>`).join("");
+document.getElementById("deniv").textContent = Math.round(ZR);
+document.getElementById("source").textContent = `Source : ${D.source}. Coin nord-ouest ${D.lat_nord}° N, ${D.lon_ouest}° E.`;
+
+regler("cellule", etat.cellule);
+</script>
+</body>
+</html>

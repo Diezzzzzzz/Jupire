@@ -1,0 +1,390 @@
+{
+ "tilt_deg": 36.0,
+ "angles": 8,
+ "soleil_az": 2.35,
+ "soleil_el": 0.42,
+ "marge_bas": 0.12,
+ "haut_px": 384,
+ "props": {
+  "chene_vert": {
+   "hauteur_m": 9.0,
+   "marge_bas": 0.2069,
+   "variantes": 3,
+   "variante_est": "forme",
+   "images": [
+    [
+     "chene_vert/v0_a0.png",
+     "chene_vert/v0_a1.png",
+     "chene_vert/v0_a2.png",
+     "chene_vert/v0_a3.png",
+     "chene_vert/v0_a4.png",
+     "chene_vert/v0_a5.png",
+     "chene_vert/v0_a6.png",
+     "chene_vert/v0_a7.png"
+    ],
+    [
+     "chene_vert/v1_a0.png",
+     "chene_vert/v1_a1.png",
+     "chene_vert/v1_a2.png",
+     "chene_vert/v1_a3.png",
+     "chene_vert/v1_a4.png",
+     "chene_vert/v1_a5.png",
+     "chene_vert/v1_a6.png",
+     "chene_vert/v1_a7.png"
+    ],
+    [
+     "chene_vert/v2_a0.png",
+     "chene_vert/v2_a1.png",
+     "chene_vert/v2_a2.png",
+     "chene_vert/v2_a3.png",
+     "chene_vert/v2_a4.png",
+     "chene_vert/v2_a5.png",
+     "chene_vert/v2_a6.png",
+     "chene_vert/v2_a7.png"
+    ]
+   ]
+  },
+  "chene_pubescent": {
+   "hauteur_m": 12.0,
+   "marge_bas": 0.2387,
+   "variantes": 3,
+   "variante_est": "forme",
+   "images": [
+    [
+     "chene_pubescent/v0_a0.png",
+     "chene_pubescent/v0_a1.png",
+     "chene_pubescent/v0_a2.png",
+     "chene_pubescent/v0_a3.png",
+     "chene_pubescent/v0_a4.png",
+     "chene_pubescent/v0_a5.png",
+     "chene_pubescent/v0_a6.png",
+     "chene_pubescent/v0_a7.png"
+    ],
+    [
+     "chene_pubescent/v1_a0.png",
+     "chene_pubescent/v1_a1.png",
+     "chene_pubescent/v1_a2.png",
+     "chene_pubescent/v1_a3.png",
+     "chene_pubescent/v1_a4.png",
+     "chene_pubescent/v1_a5.png",
+     "chene_pubescent/v1_a6.png",
+     "chene_pubescent/v1_a7.png"
+    ],
+    [
+     "chene_pubescent/v2_a0.png",
+     "chene_pubescent/v2_a1.png",
+     "chene_pubescent/v2_a2.png",
+     "chene_pubescent/v2_a3.png",
+     "chene_pubescent/v2_a4.png",
+     "chene_pubescent/v2_a5.png",
+     "chene_pubescent/v2_a6.png",
+     "chene_pubescent/v2_a7.png"
+    ]
+   ]
+  },
+  "buisson": {
+   "hauteur_m": 2.6,
+   "marge_bas": 0.3204,
+   "variantes": 3,
+   "variante_est": "forme",
+   "images": [
+    [
+     "buisson/v0_a0.png",
+     "buisson/v0_a1.png",
+     "buisson/v0_a2.png",
+     "buisson/v0_a3.png",
+     "buisson/v0_a4.png",
+     "buisson/v0_a5.png",
+     "buisson/v0_a6.png",
+     "buisson/v0_a7.png"
+    ],
+    [
+     "buisson/v1_a0.png",
+     "buisson/v1_a1.png",
+     "buisson/v1_a2.png",
+     "buisson/v1_a3.png",
+     "buisson/v1_a4.png",
+     "buisson/v1_a5.png",
+     "buisson/v1_a6.png",
+     "buisson/v1_a7.png"
+    ],
+    [
+     "buisson/v2_a0.png",
+     "buisson/v2_a1.png",
+     "buisson/v2_a2.png",
+     "buisson/v2_a3.png",
+     "buisson/v2_a4.png",
+     "buisson/v2_a5.png",
+     "buisson/v2_a6.png",
+     "buisson/v2_a7.png"
+    ]
+   ]
+  },
+  "rocher": {
+   "hauteur_m": 3.4,
+   "marge_bas": 0.1679,
+   "variantes": 3,
+   "variante_est": "forme",
+   "images": [
+    [
+     "rocher/v0_a0.png",
+     "rocher/v0_a1.png",
+     "rocher/v0_a2.png",
+     "rocher/v0_a3.png",
+     "rocher/v0_a4.png",
+     "rocher/v0_a5.png",
+     "rocher/v0_a6.png",
+     "rocher/v0_a7.png"
+    ],
+    [
+     "rocher/v1_a0.png",
+     "rocher/v1_a1.png",
+     "rocher/v1_a2.png",
+     "rocher/v1_a3.png",
+     "rocher/v1_a4.png",
+     "rocher/v1_a5.png",
+     "rocher/v1_a6.png",
+     "rocher/v1_a7.png"
+    ],
+    [
+     "rocher/v2_a0.png",
+     "rocher/v2_a1.png",
+     "rocher/v2_a2.png",
+     "rocher/v2_a3.png",
+     "rocher/v2_a4.png",
+     "rocher/v2_a5.png",
+     "rocher/v2_a6.png",
+     "rocher/v2_a7.png"
+    ]
+   ]
+  },
+  "herbe_seche": {
+   "hauteur_m": 0.8,
+   "marge_bas": 0.2395,
+   "variantes": 3,
+   "variante_est": "forme",
+   "images": [
+    [
+     "herbe_seche/v0_a0.png",
+     "herbe_seche/v0_a1.png",
+     "herbe_seche/v0_a2.png",
+     "herbe_seche/v0_a3.png",
+     "herbe_seche/v0_a4.png",
+     "herbe_seche/v0_a5.png",
+     "herbe_seche/v0_a6.png",
+     "herbe_seche/v0_a7.png"
+    ],
+    [
+     "herbe_seche/v1_a0.png",
+     "herbe_seche/v1_a1.png",
+     "herbe_seche/v1_a2.png",
+     "herbe_seche/v1_a3.png",
+     "herbe_seche/v1_a4.png",
+     "herbe_seche/v1_a5.png",
+     "herbe_seche/v1_a6.png",
+     "herbe_seche/v1_a7.png"
+    ],
+    [
+     "herbe_seche/v2_a0.png",
+     "herbe_seche/v2_a1.png",
+     "herbe_seche/v2_a2.png",
+     "herbe_seche/v2_a3.png",
+     "herbe_seche/v2_a4.png",
+     "herbe_seche/v2_a5.png",
+     "herbe_seche/v2_a6.png",
+     "herbe_seche/v2_a7.png"
+    ]
+   ]
+  },
+  "tas_feuilles": {
+   "hauteur_m": 0.6,
+   "marge_bas": 0.3151,
+   "variantes": 3,
+   "variante_est": "forme",
+   "images": [
+    [
+     "tas_feuilles/v0_a0.png",
+     "tas_feuilles/v0_a1.png",
+     "tas_feuilles/v0_a2.png",
+     "tas_feuilles/v0_a3.png",
+     "tas_feuilles/v0_a4.png",
+     "tas_feuilles/v0_a5.png",
+     "tas_feuilles/v0_a6.png",
+     "tas_feuilles/v0_a7.png"
+    ],
+    [
+     "tas_feuilles/v1_a0.png",
+     "tas_feuilles/v1_a1.png",
+     "tas_feuilles/v1_a2.png",
+     "tas_feuilles/v1_a3.png",
+     "tas_feuilles/v1_a4.png",
+     "tas_feuilles/v1_a5.png",
+     "tas_feuilles/v1_a6.png",
+     "tas_feuilles/v1_a7.png"
+    ],
+    [
+     "tas_feuilles/v2_a0.png",
+     "tas_feuilles/v2_a1.png",
+     "tas_feuilles/v2_a2.png",
+     "tas_feuilles/v2_a3.png",
+     "tas_feuilles/v2_a4.png",
+     "tas_feuilles/v2_a5.png",
+     "tas_feuilles/v2_a6.png",
+     "tas_feuilles/v2_a7.png"
+    ]
+   ]
+  },
+  "chevreuil": {
+   "hauteur_m": 2.0,
+   "marge_bas": 0.2127,
+   "variantes": 3,
+   "variante_est": "pose",
+   "images": [
+    [
+     "chevreuil/v0_a0.png",
+     "chevreuil/v0_a1.png",
+     "chevreuil/v0_a2.png",
+     "chevreuil/v0_a3.png",
+     "chevreuil/v0_a4.png",
+     "chevreuil/v0_a5.png",
+     "chevreuil/v0_a6.png",
+     "chevreuil/v0_a7.png"
+    ],
+    [
+     "chevreuil/v1_a0.png",
+     "chevreuil/v1_a1.png",
+     "chevreuil/v1_a2.png",
+     "chevreuil/v1_a3.png",
+     "chevreuil/v1_a4.png",
+     "chevreuil/v1_a5.png",
+     "chevreuil/v1_a6.png",
+     "chevreuil/v1_a7.png"
+    ],
+    [
+     "chevreuil/v2_a0.png",
+     "chevreuil/v2_a1.png",
+     "chevreuil/v2_a2.png",
+     "chevreuil/v2_a3.png",
+     "chevreuil/v2_a4.png",
+     "chevreuil/v2_a5.png",
+     "chevreuil/v2_a6.png",
+     "chevreuil/v2_a7.png"
+    ]
+   ]
+  },
+  "sanglier": {
+   "hauteur_m": 1.6,
+   "marge_bas": 0.2805,
+   "variantes": 3,
+   "variante_est": "pose",
+   "images": [
+    [
+     "sanglier/v0_a0.png",
+     "sanglier/v0_a1.png",
+     "sanglier/v0_a2.png",
+     "sanglier/v0_a3.png",
+     "sanglier/v0_a4.png",
+     "sanglier/v0_a5.png",
+     "sanglier/v0_a6.png",
+     "sanglier/v0_a7.png"
+    ],
+    [
+     "sanglier/v1_a0.png",
+     "sanglier/v1_a1.png",
+     "sanglier/v1_a2.png",
+     "sanglier/v1_a3.png",
+     "sanglier/v1_a4.png",
+     "sanglier/v1_a5.png",
+     "sanglier/v1_a6.png",
+     "sanglier/v1_a7.png"
+    ],
+    [
+     "sanglier/v2_a0.png",
+     "sanglier/v2_a1.png",
+     "sanglier/v2_a2.png",
+     "sanglier/v2_a3.png",
+     "sanglier/v2_a4.png",
+     "sanglier/v2_a5.png",
+     "sanglier/v2_a6.png",
+     "sanglier/v2_a7.png"
+    ]
+   ]
+  },
+  "oiseau": {
+   "hauteur_m": 2.2,
+   "marge_bas": 0.144,
+   "variantes": 3,
+   "variante_est": "pose",
+   "images": [
+    [
+     "oiseau/v0_a0.png",
+     "oiseau/v0_a1.png",
+     "oiseau/v0_a2.png",
+     "oiseau/v0_a3.png",
+     "oiseau/v0_a4.png",
+     "oiseau/v0_a5.png",
+     "oiseau/v0_a6.png",
+     "oiseau/v0_a7.png"
+    ],
+    [
+     "oiseau/v1_a0.png",
+     "oiseau/v1_a1.png",
+     "oiseau/v1_a2.png",
+     "oiseau/v1_a3.png",
+     "oiseau/v1_a4.png",
+     "oiseau/v1_a5.png",
+     "oiseau/v1_a6.png",
+     "oiseau/v1_a7.png"
+    ],
+    [
+     "oiseau/v2_a0.png",
+     "oiseau/v2_a1.png",
+     "oiseau/v2_a2.png",
+     "oiseau/v2_a3.png",
+     "oiseau/v2_a4.png",
+     "oiseau/v2_a5.png",
+     "oiseau/v2_a6.png",
+     "oiseau/v2_a7.png"
+    ]
+   ]
+  },
+  "poisson": {
+   "hauteur_m": 1.0,
+   "marge_bas": 0.3062,
+   "variantes": 3,
+   "variante_est": "pose",
+   "images": [
+    [
+     "poisson/v0_a0.png",
+     "poisson/v0_a1.png",
+     "poisson/v0_a2.png",
+     "poisson/v0_a3.png",
+     "poisson/v0_a4.png",
+     "poisson/v0_a5.png",
+     "poisson/v0_a6.png",
+     "poisson/v0_a7.png"
+    ],
+    [
+     "poisson/v1_a0.png",
+     "poisson/v1_a1.png",
+     "poisson/v1_a2.png",
+     "poisson/v1_a3.png",
+     "poisson/v1_a4.png",
+     "poisson/v1_a5.png",
+     "poisson/v1_a6.png",
+     "poisson/v1_a7.png"
+    ],
+    [
+     "poisson/v2_a0.png",
+     "poisson/v2_a1.png",
+     "poisson/v2_a2.png",
+     "poisson/v2_a3.png",
+     "poisson/v2_a4.png",
+     "poisson/v2_a5.png",
+     "poisson/v2_a6.png",
+     "poisson/v2_a7.png"
+    ]
+   ]
+  }
+ }
+}
